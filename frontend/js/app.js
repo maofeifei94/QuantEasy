@@ -2214,6 +2214,72 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
     } catch (e) { toast(e.message, true); }
   }
 
+  const SCHEME_KEY = "alphalab_screen_schemes";
+
+  function loadScreenSchemes() {
+    try {
+      return JSON.parse(localStorage.getItem(SCHEME_KEY) || "[]");
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function saveScreenScheme() {
+    const name = window.prompt("选股方案名称", `方案 ${new Date().toLocaleDateString("zh-CN")}`);
+    if (!name) return;
+    const schemes = loadScreenSchemes().filter((s) => s.name !== name.trim());
+    schemes.unshift({
+      name: name.trim(),
+      conditions: state.screenerConds.map((c) => ({ ...c })),
+      filters: {
+        star: $("#scrStar").checked,
+        bj: $("#scrBJ").checked,
+        amount: Number($("#scrAmount").value) || 0,
+      },
+      limit: Number($("#scrLimit").value) || 50,
+    });
+    localStorage.setItem(SCHEME_KEY, JSON.stringify(schemes.slice(0, 30)));
+    toast("选股方案已保存");
+  }
+
+  function openLoadScreenScheme() {
+    const schemes = loadScreenSchemes();
+    if (!schemes.length) { toast("暂无保存的选股方案", true); return; }
+    openModal(`
+      <div class="modal-head">
+        <div><h3>载入选股方案</h3><div class="panel-sub" style="margin-top:3px">保存于当前浏览器</div></div>
+        <button class="icon-btn" data-close>✕</button>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:6px;max-height:360px;overflow-y:auto">
+        ${schemes.map((s, i) => `<button class="btn ghost" data-scheme="${i}" style="justify-content:flex-start;text-align:left">
+          ${esc(s.name)} <span class="panel-sub" style="margin-left:8px">${s.conditions.length} 个条件</span>
+        </button>`).join("")}
+      </div>`, true);
+    $$("#modalBox [data-scheme]").forEach((btn) => btn.addEventListener("click", () => {
+      const s = schemes[+btn.dataset.scheme];
+      state.screenerConds = (s.conditions || []).map((c) => ({ ...c }));
+      if (!state.screenerConds.length) state.screenerConds = [{ factorId: state.factors[0]?.id || "", mode: "rank_top", value: 20 }];
+      const f = s.filters || {};
+      $("#scrStar").checked = f.star !== false;
+      $("#scrBJ").checked = f.bj !== false;
+      $("#scrAmount").value = f.amount || 0;
+      $("#scrLimit").value = s.limit || 50;
+      renderScreenerConds();
+      closeModal();
+      toast(`已载入方案「${s.name}」`);
+    }));
+  }
+
+  function runScreenerBacktest() {
+    const res = state.screenerResult;
+    if (!res || !res.items.length) { toast("请先运行选股", true); return; }
+    if (res.items.length < 2) { toast("选股结果不足 2 只，无法回测", true); return; }
+    state.universe = new Set(res.items.map((i) => i.code));
+    renderUniverse();
+    switchPage("backtest");
+    toast(`已将 ${res.items.length} 只股票载入回测股票池`);
+  }
+
   /* ------------------------------ 回测记录 ------------------------------ */
   async function loadHistory() {
     const grid = $("#historyGrid");
@@ -2507,6 +2573,9 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
     });
     $("#scrExport").addEventListener("click", exportScreenerCsv);
     $("#scrSave").addEventListener("click", saveScreenerUniverse);
+    $("#scrSaveScheme").addEventListener("click", saveScreenScheme);
+    $("#scrLoadScheme").addEventListener("click", openLoadScreenScheme);
+    $("#scrBacktest").addEventListener("click", runScreenerBacktest);
     $("#batchBtn").addEventListener("click", openBatch);
     $("#costBtn").addEventListener("click", openCostSensitivity);
     $("#optimizeBtn").addEventListener("click", runParamScan);
