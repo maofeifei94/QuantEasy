@@ -232,6 +232,14 @@ def latest_signal(payload: dict = Body(...)) -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/api/screener")
+def screener(payload: dict = Body(...)) -> dict:
+    try:
+        return services.screen_stocks(payload)
+    except (FactorError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/api/portfolio/combine")
 def combine_portfolios(payload: dict = Body(...)) -> dict:
     try:

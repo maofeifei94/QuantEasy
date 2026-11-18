@@ -1588,6 +1588,115 @@ def latest_signal(payload: dict) -> dict:
     }
 
 
+def screen_stocks(payload: dict) -> dict:
+    """多条件选股：按交易日对因子做排名/阈值过滤，条件之间为 AND 关系。"""
+    codes = payload.get("codes") or None
+    data = panel.build_panel(codes, payload.get("start") or None, payload.get("end") or None)
+    valid = _apply_filters(data, payload.get("filters"))
+    conds = payload.get("conditions") or []
+    if not conds:
+        raise ValueError("请至少添加一个选股条件")
+    if len(conds) > 6:
+        raise ValueError("最多支持 6 个选股条件")
+
+    specs = []
+    for c in conds:
+        if not isinstance(c, dict):
+            c = {"factor_id": c}
+        spec = resolve_factor(c)
+        raw = np.asarray(compute(spec["expression"], data) * spec["direction"], dtype=np.float64)
+        mode = c.get("mode") or "rank_top"
+        if mode not in ("rank_top", "rank_bottom", "gte", "lte"):
+            mode = "rank_top"
+        try:
+            value = float(c.get("value"))
+        except (TypeError, ValueError):
+            raise ValueError(f"条件「{spec['label']}」的阈值无效")
+        specs.append({"spec": spec, "raw": raw, "mode": mode, "value": value})
+
+    base_counts = (np.isfinite(specs[0]["raw"]) & valid).sum(axis=1)
+    date = payload.get("date")
+    if date:
+        if date not in data["dates"]:
+            raise ValueError("所选日期不在数据范围内")
+        t = data["dates"].index(date)
+        if base_counts[t] < 2:
+            raise ValueError("所选日期有效数据不足")
+    else:
+        cand = np.where(base_counts >= max(2, min(10, len(data["codes"]))))[0]
+        if cand.size == 0:
+            raise ValueError("没有足够的有效数据")
+        t = int(cand[-1])
+
+    N = len(data["codes"])
+    valid_t = valid[t]
+    mask = valid_t.copy()
+    rows: list[np.ndarray] = []
+    zs: list[np.ndarray] = []
+    cond_detail = []
+    for item in specs:
+        row = item["raw"][t]
+        base = mask & np.isfinite(row)
+        if not base.any():
+            raise ValueError(f"条件「{item['spec']['label']}」在所选日期没有有效值")
+        mode, value = item["mode"], item["value"]
+        if mode in ("rank_top", "rank_bottom"):
+            pct = max(0.1, min(value, 100.0))
+            key = np.where(base, -row, np.inf) if mode == "rank_top" else np.where(base, row, np.inf)
+            order = np.argsort(key)
+            n = int(base.sum())
+            ranks = np.full(N, np.inf)
+            ranks[order[:n]] = (np.arange(n) + 1.0) / n
+            passed = base & (ranks <= pct / 100.0)
+        else:
+            passed = base & ((row >= value) if mode == "gte" else (row <= value))
+        vals = row[base]
+        mu, sd = float(np.mean(vals)), float(np.std(vals))
+        z = np.where(base, (row - mu) / max(sd, 1e-9), np.nan)
+        prefer_high = mode in ("rank_top", "gte")
+        zs.append(z if prefer_high else -np.asarray(z))
+        rows.append(row)
+        cond_detail.append({
+            "label": item["spec"]["label"],
+            "mode": mode,
+            "value": value,
+            "passed": int(passed.sum()),
+        })
+        mask = passed
+
+    idxs = np.where(mask)[0]
+    close = data["close"]
+    prev_close = close[t - 1] if t > 0 else np.full(N, np.nan)
+    score = np.nansum(np.stack(zs), axis=0) if idxs.size else np.zeros(N)
+    order = idxs[np.argsort(-score[idxs])] if idxs.size else np.array([], dtype=int)
+    limit = max(1, min(int(payload.get("limit") or 50), 200))
+
+    items = []
+    for j in order[:limit]:
+        change = (close[t, j] / prev_close[j] - 1.0) if np.isfinite(prev_close[j]) and prev_close[j] else np.nan
+        items.append({
+            "code": data["codes"][j],
+            "name": data["names"].get(data["codes"][j], data["codes"][j]),
+            "industry": data["industries"].get(data["codes"][j], "未分类"),
+            "score": round(float(score[j]), 3),
+            "close": round(float(close[t, j]), 2) if np.isfinite(close[t, j]) else None,
+            "change_pct": round(float(change) * 100, 2) if np.isfinite(change) else None,
+            "values": [
+                round(float(row[j]), 4) if np.isfinite(row[j]) else None
+                for row in rows
+            ],
+        })
+    return {
+        "as_of": data["dates"][t],
+        "count": int(mask.sum()),
+        "returned": len(items),
+        "universe_size": int(valid_t.sum()),
+        "conditions": cond_detail,
+        "labels": [item["spec"]["label"] for item in specs],
+        "items": items,
+    }
+
+
 def batch_backtest(payload: dict) -> dict:
     """用同一套配置批量回测全部内置因子，输出排行榜。"""
     codes = payload.get("codes") or None

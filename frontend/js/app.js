@@ -20,6 +20,8 @@
     stockFilter: "",
     factorQuery: "",
     historyQuery: "",
+    screenerConds: [],
+    screenerResult: null,
     polling: false,
   };
 
@@ -27,6 +29,7 @@
     overview: ["Workspace / Overview", "研究总览"],
     data: ["Workspace / Market Data", "行情数据"],
     factors: ["Research / Factor Lab", "因子实验室"],
+    screener: ["Research / Screener", "智能选股"],
     backtest: ["Research / Backtest", "回测引擎"],
     history: ["Archive / Backtests", "回测记录"],
   };
@@ -2092,6 +2095,125 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
   }
 
 
+  /* ------------------------------ 智能选股 ------------------------------ */
+  const SCREEN_MODES = { rank_top: "排名前", rank_bottom: "排名后", gte: "因子值 ≥", lte: "因子值 ≤" };
+
+  function initScreener() {
+    if (!state.screenerConds.length) {
+      const first = state.factors[0];
+      state.screenerConds = [{ factorId: first ? first.id : "", mode: "rank_top", value: 20 }];
+    }
+    renderScreenerConds();
+  }
+
+  function renderScreenerConds() {
+    const box = $("#scrConds");
+    if (!box) return;
+    const opts = (sel) => state.factors.map((f) => {
+      const label = f.label || f.name || f.id;
+      return `<option value="${esc(f.id)}" ${f.id === sel ? "selected" : ""}>${esc(label)}</option>`;
+    }).join("");
+    box.innerHTML = state.screenerConds.map((c, i) => `
+      <div class="form-row" style="gap:8px;align-items:center;border:1px solid var(--border-soft);background:#0a121c;border-radius:8px;padding:8px 10px">
+        <span class="hint" style="min-width:38px">条件 ${i + 1}</span>
+        <select class="scr-factor" data-i="${i}" style="min-width:190px">${opts(c.factorId)}</select>
+        <select class="scr-mode" data-i="${i}" style="width:112px">${Object.entries(SCREEN_MODES).map(([v, t]) => `<option value="${v}" ${c.mode === v ? "selected" : ""}>${t}</option>`).join("")}</select>
+        <input type="number" class="scr-value" data-i="${i}" value="${c.value}" step="1" style="width:92px">
+        <span class="hint" data-unit="${i}">${c.mode.startsWith("rank") ? "%" : "值"}</span>
+        <button class="icon-btn" data-del="${i}" title="删除条件">✕</button>
+      </div>`).join("");
+
+    $$("#scrConds .scr-factor").forEach((el) => el.addEventListener("change", () => {
+      state.screenerConds[+el.dataset.i].factorId = el.value;
+    }));
+    $$("#scrConds .scr-mode").forEach((el) => el.addEventListener("change", () => {
+      const i = +el.dataset.i;
+      state.screenerConds[i].mode = el.value;
+      const unit = document.querySelector(`#scrConds [data-unit="${i}"]`);
+      if (unit) unit.textContent = el.value.startsWith("rank") ? "%" : "值";
+    }));
+    $$("#scrConds .scr-value").forEach((el) => el.addEventListener("input", () => {
+      state.screenerConds[+el.dataset.i].value = Number(el.value) || 0;
+    }));
+    $$("#scrConds [data-del]").forEach((el) => el.addEventListener("click", () => {
+      if (state.screenerConds.length <= 1) { toast("至少保留一个条件", true); return; }
+      state.screenerConds.splice(+el.dataset.del, 1);
+      renderScreenerConds();
+    }));
+  }
+
+  async function runScreener() {
+    const btn = $("#scrRun");
+    btn.disabled = true;
+    btn.innerHTML = `<span class="spinner"></span> 选股中`;
+    try {
+      const payload = {
+        date: $("#scrDate").value || null,
+        limit: Number($("#scrLimit").value) || 50,
+        filters: {
+          exclude_star: $("#scrStar").checked,
+          exclude_bj: $("#scrBJ").checked,
+          min_amount: (Number($("#scrAmount").value) || 0) * 10000,
+        },
+        conditions: state.screenerConds.map((c) => ({
+          factor_id: c.factorId, mode: c.mode, value: c.value,
+        })),
+      };
+      const res = await api("/api/screener", { method: "POST", body: payload });
+      state.screenerResult = res;
+      renderScreenerResult(res);
+      toast(`选股完成，命中 ${res.count} 只`);
+    } catch (e) {
+      toast(e.message, true);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "开始选股";
+    }
+  }
+
+  function renderScreenerResult(res) {
+    const labels = res.labels || [];
+    $("#scrMeta").textContent = `${res.as_of} · 股票池 ${res.universe_size} 只 · 命中 ${res.count} 只 · 显示 ${res.returned} 只`;
+    $("#scrHead").innerHTML = `<tr><th>代码</th><th>名称</th><th>行业</th>` +
+      labels.map((l) => `<th style="text-align:right">${esc(l)}</th>`).join("") +
+      `<th style="text-align:right">综合分</th><th style="text-align:right">最新价</th><th style="text-align:right">涨跌幅</th></tr>`;
+    const body = $("#scrBody");
+    if (!res.items.length) {
+      body.innerHTML = `<tr><td colspan="${labels.length + 6}" style="text-align:center;color:var(--faint);padding:30px">没有股票满足全部条件</td></tr>`;
+      return;
+    }
+    body.innerHTML = res.items.map((it) => `<tr style="cursor:default">
+      <td><span class="cd">${esc(it.code)}</span></td>
+      <td>${esc(it.name)}</td>
+      <td>${esc(it.industry)}</td>
+      ${it.values.map((v) => `<td style="text-align:right" class="num-mono">${v == null ? "—" : fmtNum(v, 3)}</td>`).join("")}
+      <td style="text-align:right" class="num-mono">${fmtNum(it.score, 2)}</td>
+      <td style="text-align:right" class="num-mono">${it.close == null ? "—" : it.close.toFixed(2)}</td>
+      <td style="text-align:right" class="num-mono ${it.change_pct > 0 ? "up" : it.change_pct < 0 ? "down" : ""}">${it.change_pct == null ? "—" : it.change_pct.toFixed(2) + "%"}</td>
+    </tr>`).join("");
+  }
+
+  function exportScreenerCsv() {
+    const res = state.screenerResult;
+    if (!res || !res.items.length) { toast("暂无可导出的结果", true); return; }
+    const rows = [["code", "name", "industry", ...(res.labels || []), "score", "close", "change_pct"]];
+    res.items.forEach((it) => rows.push([it.code, it.name, it.industry, ...it.values, it.score, it.close, it.change_pct]));
+    downloadCsv(rows, `screen_${res.as_of || "latest"}.csv`);
+    toast("选股结果已导出 CSV");
+  }
+
+  async function saveScreenerUniverse() {
+    const res = state.screenerResult;
+    if (!res || !res.items.length) { toast("暂无可保存的选股结果", true); return; }
+    const name = window.prompt("自选池名称", `选股 ${res.as_of}`);
+    if (!name) return;
+    try {
+      await api("/api/universes", { method: "POST", body: { name: name.trim(), codes: res.items.map((i) => i.code) } });
+      toast("已保存为自选池");
+      loadIndices();
+    } catch (e) { toast(e.message, true); }
+  }
+
   /* ------------------------------ 回测记录 ------------------------------ */
   async function loadHistory() {
     const grid = $("#historyGrid");
@@ -2377,6 +2499,14 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
     $("#saveConfigBtn").addEventListener("click", saveCurrentConfig);
     $("#loadConfigBtn").addEventListener("click", openLoadConfig);
     $("#runBacktestBtn").addEventListener("click", runBacktest);
+    $("#scrRun").addEventListener("click", runScreener);
+    $("#scrAdd").addEventListener("click", () => {
+      if (state.screenerConds.length >= 6) { toast("最多支持 6 个条件", true); return; }
+      state.screenerConds.push({ factorId: state.factors[0]?.id || "", mode: "rank_top", value: 20 });
+      renderScreenerConds();
+    });
+    $("#scrExport").addEventListener("click", exportScreenerCsv);
+    $("#scrSave").addEventListener("click", saveScreenerUniverse);
     $("#batchBtn").addEventListener("click", openBatch);
     $("#costBtn").addEventListener("click", openCostSensitivity);
     $("#optimizeBtn").addEventListener("click", runParamScan);
@@ -2424,6 +2554,7 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
       const s = await loadStatus(true);
       await Promise.all([loadStocks(), loadFactors(), loadIndices()]);
       renderUniverse();
+      initScreener();
       if (s.stock_count === 0) waitForData();
       const first = state.factors.find((f) => !f.is_custom) || state.factors[0];
       if (first) selectFactor(first.id);

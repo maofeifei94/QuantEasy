@@ -32,6 +32,10 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19V5M4 19h16"/><path d="M7 15l4-6 3 4 4-7"/><circle cx="18" cy="6" r="1.6" fill="currentColor" stroke="none"/></svg>
         <span>因子实验室</span>
       </button>
+      <button class="nav-item" data-page="screener">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 5h16l-6 7v6l-4 2v-8L4 5z"/></svg>
+        <span>智能选股</span>
+      </button>
       <button class="nav-item" data-page="backtest">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 17l5-6 4 3 5-7 4 4"/><path d="M3 21h18"/><circle cx="8" cy="11" r="1.3" fill="currentColor" stroke="none"/></svg>
         <span>回测引擎</span>
@@ -457,6 +461,69 @@
               <div class="sub">JAX 将自动编译并执行向量化模拟，通常 1~3 秒完成</div>
             </div>
           </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= 智能选股 ================= -->
+    <section class="page" id="page-screener">
+      <div class="panel">
+        <div class="panel-head">
+          <div>
+            <div class="panel-title"><span class="num">SCREEN</span>多条件选股</div>
+            <div class="panel-sub">内置或自定义因子按排名/阈值组合筛选，条件之间为「且」关系</div>
+          </div>
+          <button class="btn primary" id="scrRun">开始选股</button>
+        </div>
+        <div class="form-grid">
+          <div class="field">
+            <label>选股日期 <span class="hint">留空=最新交易日</span></label>
+            <input type="date" id="scrDate">
+          </div>
+          <div class="field">
+            <label>最小成交额 <span class="hint">万元，0=不限</span></label>
+            <input type="number" id="scrAmount" value="0" min="0" step="100">
+          </div>
+          <div class="field">
+            <label>返回数量</label>
+            <input type="number" id="scrLimit" value="50" min="1" max="200">
+          </div>
+        </div>
+        <div class="form-row" style="margin-top:12px;gap:18px">
+          <label class="switch">
+            <input type="checkbox" id="scrStar" checked>
+            <span class="track"></span>
+            <span>排除科创板</span>
+          </label>
+          <label class="switch">
+            <input type="checkbox" id="scrBJ" checked>
+            <span class="track"></span>
+            <span>排除北交所</span>
+          </label>
+        </div>
+        <div id="scrConds" style="margin-top:14px;display:flex;flex-direction:column;gap:8px"></div>
+        <div class="form-row" style="margin-top:12px">
+          <button class="btn ghost sm" id="scrAdd">+ 添加条件</button>
+          <span class="panel-sub" style="margin:0">排名模式按当日因子值截面排序</span>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top:16px">
+        <div class="panel-head">
+          <div>
+            <div class="panel-title"><span class="num">RESULT</span>选股结果</div>
+            <div class="panel-sub" id="scrMeta">尚未运行</div>
+          </div>
+          <div class="form-row" style="gap:6px">
+            <button class="btn sm" id="scrExport">导出 CSV</button>
+            <button class="btn sm" id="scrSave">保存为自选池</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead id="scrHead"></thead>
+            <tbody id="scrBody"></tbody>
+          </table>
         </div>
       </div>
     </section>
