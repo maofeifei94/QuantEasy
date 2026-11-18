@@ -247,6 +247,21 @@ def _orthogonalize(score: np.ndarray, data: dict) -> np.ndarray:
     return out
 
 
+def _factor_components(data: dict, specs: list[dict], options: dict) -> list[np.ndarray]:
+    """逐因子计算并预处理，返回与面板同形的得分矩阵列表。"""
+    multi = len(specs) > 1
+    components: list[np.ndarray] = []
+    for spec in specs:
+        raw = compute(spec["expression"], data)
+        scored = pre_mod.apply_preprocess(
+            raw * spec["direction"], data, options, force_standardize=multi
+        )
+        if options.get("orthogonalize"):
+            scored = _orthogonalize(np.asarray(scored), data)
+        components.append(np.asarray(scored))
+    return components
+
+
 def _prepare(payload: dict):
     codes = payload.get("codes") or None
     if isinstance(codes, str):
@@ -261,15 +276,7 @@ def _prepare(payload: dict):
     options = payload.get("preprocess") or {}
     multi = len(specs) > 1
 
-    components = []
-    for spec in specs:
-        raw = compute(spec["expression"], data)
-        scored = pre_mod.apply_preprocess(
-            raw * spec["direction"], data, options, force_standardize=multi
-        )
-        if options.get("orthogonalize"):
-            scored = _orthogonalize(np.asarray(scored), data)
-        components.append(np.asarray(scored))
+    components = _factor_components(data, specs, options)
 
     if multi:
         stack = np.stack(components)
@@ -2096,6 +2103,132 @@ def batch_backtest(payload: dict) -> dict:
             "top_n": top_n,
             "top_pct": top_frac,
             "weighting": weighting,
+        },
+    }
+
+
+def optimize_factor_weights(payload: dict) -> dict:
+    """在回测框架下搜索多因子权重（非负且和为 1），最大化指定绩效指标。"""
+    factors = payload.get("factors") or []
+    if not isinstance(factors, list) or len(factors) < 2:
+        raise ValueError("请至少选择两个因子进行权重优化")
+    if len(factors) > 6:
+        raise ValueError("最多优化 6 个因子")
+    weighting = payload.get("weighting") or "equal"
+    if weighting == "risk_parity":
+        raise ValueError("风险平价按因子排名构建组合，不支持权重优化，请改用等权或得分加权")
+    metric = payload.get("objective") or "sharpe"
+    if metric not in ("sharpe", "calmar", "annual_return"):
+        metric = "sharpe"
+
+    codes = payload.get("codes") or None
+    data = panel.build_panel(codes, payload.get("start") or None, payload.get("end") or None)
+    valid = _apply_filters(data, payload.get("filters"))
+    specs = _resolve_factor_specs({"factors": factors})
+    options = dict(payload.get("preprocess") or {})
+    stack = np.stack(_factor_components(data, specs, options))
+    close, dates = data["close"], data["dates"]
+
+    freq = max(1, min(int(payload.get("rebalance_days") or 10), 120))
+    reb_mode, reb_weekday, reb_month_day = _rebalance_args(payload)
+    ref = np.nansum(stack, axis=0)
+    rebalance, _ = _rebalance_mask(ref, valid, freq, dates, reb_mode, reb_weekday, reb_month_day)
+    top_n = int(payload.get("top_n") or 0)
+    top_frac = float(payload.get("top_pct") or 0.2)
+    long_short = bool(payload.get("long_short") or False)
+    commission = float(payload.get("commission_bps") or 15) / 10000.0
+    stamp_duty = float(payload.get("stamp_duty_bps") or 0) / 10000.0
+    slippage = float(payload.get("slippage_bps") or 0) / 10000.0
+    max_weight = float(payload.get("max_weight") or 0) / 100.0
+    vol = _rolling_vol(data["returns"]) if weighting == "inverse_vol" else None
+    timing_window = int(payload.get("timing_window") or 0) if payload.get("market_timing") else 0
+    timing = _market_timing(dates, dates[0], dates[-1], timing_window) if timing_window > 1 else None
+    trade_constraints = bool(payload.get("trade_constraints"))
+    buy_block = sell_block = None
+    if trade_constraints:
+        rets, volume = data["returns"], data["volume"]
+        buy_block = (rets >= 0.095) | (volume <= 0)
+        sell_block = (rets <= -0.095) | (volume <= 0)
+    stop_loss = max(0.0, min(float(payload.get("stop_loss_pct") or 0), 50)) / 100.0
+    take_profit = max(0.0, min(float(payload.get("take_profit_pct") or 0), 200)) / 100.0
+    trailing_stop = max(0.0, min(float(payload.get("trailing_stop_pct") or 0), 50)) / 100.0
+    position_cap = _position_cap(payload)
+    industry_idx, industry_cap, n_industries = _industry_cap_args(payload, data)
+    min_hold_days, turnover_cap = _trade_friction_args(payload)
+    vol_target, vol_lookback = _vol_target_args(payload)
+
+    k = len(specs)
+    evaluations = {"n": 0}
+
+    def combine(w: np.ndarray) -> np.ndarray:
+        ww = np.asarray(w, dtype=np.float64).reshape(-1, 1, 1)
+        num = np.nansum(stack * ww, axis=0)
+        den = np.nansum(np.where(np.isfinite(stack), np.abs(ww), 0.0), axis=0)
+        return np.where(den > 1e-12, num / np.maximum(den, 1e-12), np.nan)
+
+    def evaluate(w: np.ndarray):
+        score = combine(w)
+        sim = bt_engine.run_backtest(
+            score=score, close=close, valid=valid, rebalance=rebalance,
+            top_frac=top_frac, top_n=top_n, long_short=long_short,
+            commission=commission, stamp_duty=stamp_duty, slippage=slippage,
+            weighting=weighting, max_weight=max_weight, vol=vol, timing=timing,
+            buy_block=buy_block, sell_block=sell_block, constraints=trade_constraints,
+            stop_loss=stop_loss, take_profit=take_profit, trailing_stop=trailing_stop,
+            industry_idx=industry_idx, industry_cap=industry_cap, n_industries=n_industries,
+            min_hold_days=min_hold_days, turnover_cap=turnover_cap, position_cap=position_cap,
+            vol_target=vol_target, vol_lookback=vol_lookback,
+        )
+        evaluations["n"] += 1
+        return float(sim["metrics"][metric]), sim["metrics"]
+
+    raw = np.asarray([abs(float(f.get("weight", 1) or 0)) for f in factors], dtype=np.float64)
+    if raw.sum() <= 1e-9:
+        raw = np.ones(k)
+    start_w = raw / raw.sum()
+    base_val, base_metrics = evaluate(start_w)
+
+    res = minimize(
+        lambda w: -evaluate(w)[0], start_w, method="SLSQP",
+        bounds=[(0.0, 1.0)] * k,
+        constraints=[{"type": "eq", "fun": lambda w: float(np.sum(w) - 1.0)}],
+        # 目标是排序驱动的分段常数函数，需较大的差分步长才能感知权重变化
+        options={"maxiter": 30, "ftol": 1e-6, "eps": 0.05},
+    )
+    best_w = np.clip(np.asarray(res.x, dtype=np.float64), 0.0, 1.0)
+    best_w = start_w if best_w.sum() <= 1e-9 else best_w / best_w.sum()
+    best_val, best_metrics = evaluate(best_w)
+
+    # 兜底：与单因子顶点及初始权重比较，避免启发式搜索陷入平台
+    for i in range(k):
+        vertex = np.zeros(k)
+        vertex[i] = 1.0
+        v_val, v_metrics = evaluate(vertex)
+        if v_val > best_val + 1e-9:
+            best_w, best_val, best_metrics = vertex, v_val, v_metrics
+
+    keys = ("sharpe", "annual_return", "max_drawdown", "calmar", "annual_volatility",
+            "total_return", "annual_turnover", "win_rate")
+    pack = lambda m: {k2: round(float(m[k2]), 4) for k2 in keys if k2 in m}
+    return {
+        "objective": metric,
+        "labels": [s["label"] for s in specs],
+        "baseline": {
+            "weights": [round(float(v), 4) for v in start_w],
+            "value": round(base_val, 4),
+            "metrics": pack(base_metrics),
+        },
+        "best": {
+            "weights": [round(float(v), 4) for v in best_w],
+            "value": round(best_val, 4),
+            "metrics": pack(best_metrics),
+        },
+        "iterations": evaluations["n"],
+        "universe": {
+            "stocks": len(data["codes"]),
+            "start": dates[0],
+            "end": dates[-1],
+            "days": len(dates),
         },
     }
 

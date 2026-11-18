@@ -278,6 +278,16 @@ def optimize_backtest(payload: dict = Body(...)) -> dict:
         raise HTTPException(status_code=500, detail=f"参数扫描失败：{exc}") from exc
 
 
+@app.post("/api/backtest/optimize-weights")
+def optimize_factor_weights(payload: dict = Body(...)) -> dict:
+    try:
+        return services.optimize_factor_weights(payload)
+    except (FactorError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=f"因子权重优化失败：{exc}") from exc
+
+
 @app.post("/api/backtest/batch")
 def batch_backtest(payload: dict = Body(...)) -> dict:
     try:

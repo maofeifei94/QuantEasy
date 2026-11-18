@@ -1692,6 +1692,95 @@
     });
   }
 
+  /* ------------------------------ 因子权重优化 ------------------------------ */
+  function openWeightOpt() {
+    if (state.btFactors.length < 2) {
+      toast("请先在因子组合中选择至少两个因子", true);
+      return;
+    }
+    openModal(`
+      <div class="modal-head">
+        <div><h3>因子权重优化</h3>
+          <div class="panel-sub" style="margin-top:3px">在回测框架下搜索非负权重（和为 1），最大化指定绩效指标</div></div>
+        <button class="icon-btn" data-close>✕</button>
+      </div>
+      <div class="form-row" style="gap:14px;align-items:flex-end">
+        <div class="field"><label>优化目标</label>
+          <select id="woObjective">
+            <option value="sharpe">夏普比率</option>
+            <option value="calmar">卡玛比率</option>
+            <option value="annual_return">年化收益</option>
+          </select>
+        </div>
+        <button class="btn primary" id="woRun">开始优化</button>
+        <span class="panel-sub">${state.btFactors.length} 个因子 · 使用当前回测配置</span>
+      </div>
+      <div id="woBody" style="margin-top:14px">
+        <div class="hint-box">优化为启发式搜索（SLSQP），结果可能随初始权重与数据区间变化，建议结合样本外表现判断。</div>
+      </div>`, true);
+    $("#woRun").addEventListener("click", runWeightOpt);
+  }
+
+  async function runWeightOpt() {
+    const btn = $("#woRun");
+    const box = $("#woBody");
+    btn.disabled = true;
+    btn.innerHTML = `<span class="spinner"></span> 优化中`;
+    box.innerHTML = `<div class="empty" style="border:none"><p>正在迭代搜索因子权重…</p><div class="sub">每次迭代执行一次完整回测</div></div>`;
+    try {
+      const payload = { ...buildCommonConfig(), objective: $("#woObjective").value };
+      const res = await api("/api/backtest/optimize-weights", { method: "POST", body: payload });
+      renderWeightOpt(res);
+    } catch (e) {
+      box.innerHTML = `<div class="hint-box"><span class="down">${esc(e.message)}</span></div>`;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "开始优化";
+    }
+  }
+
+  function renderWeightOpt(res) {
+    const objLabel = { sharpe: "夏普", calmar: "卡玛", annual_return: "年化收益" }[res.objective];
+    const fmtVal = (v) => (res.objective === "annual_return" ? fmtPct(v) : fmtNum(v, 3));
+    const metricRow = (m) => `
+      <span class="chip">年化 ${fmtPct(m.annual_return)}</span>
+      <span class="chip">夏普 ${fmtNum(m.sharpe)}</span>
+      <span class="chip">回撤 ${fmtPct(m.max_drawdown)}</span>`;
+    const weightsHtml = (weights) => res.labels.map((label, i) => `
+      <div class="market-row" style="cursor:default">
+        <div class="nm"><span class="nm">${esc(label)}</span></div>
+        <div class="px num-mono">${fmtPct(weights[i], 1, false)}</div>
+      </div>`).join("");
+    $("#woBody").innerHTML = `
+      <div class="grid-2">
+        <div class="panel" style="padding:14px">
+          <div class="panel-title" style="font-size:13px">当前权重</div>
+          <div class="factor-meta" style="margin:8px 0">${metricRow(res.baseline.metrics)}</div>
+          <div class="panel-sub">${objLabel} ${fmtVal(res.baseline.value)}</div>
+          <div style="margin-top:8px">${weightsHtml(res.baseline.weights)}</div>
+        </div>
+        <div class="panel" style="padding:14px">
+          <div class="panel-title" style="font-size:13px">优化权重</div>
+          <div class="factor-meta" style="margin:8px 0">${metricRow(res.best.metrics)}</div>
+          <div class="panel-sub">${objLabel} ${fmtVal(res.best.value)}</div>
+          <div style="margin-top:8px">${weightsHtml(res.best.weights)}</div>
+        </div>
+      </div>
+      <div class="modal-foot" style="padding-left:0;padding-right:0">
+        <span class="panel-sub">共评估 ${res.iterations} 次 · ${esc(res.universe.start)} → ${esc(res.universe.end)}</span>
+        <div class="form-row" style="gap:6px">
+          <button class="btn ghost" data-close>关闭</button>
+          <button class="btn primary" id="woApply">应用优化权重</button>
+        </div>
+      </div>`;
+    $("#woApply").addEventListener("click", () => {
+      state.btFactors = state.btFactors.map((f, i) => ({ ...f, weight: res.best.weights[i] }));
+      renderCombo();
+      closeModal();
+      toast("已应用优化权重，可重新运行回测");
+    });
+  }
+
   async function runBacktest() {
     const btn = $("#runBacktestBtn");
     if (!state.btFactors.length) { toast("请至少添加一个因子", true); return; }
@@ -3083,6 +3172,7 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
     $("#scrBacktest").addEventListener("click", runScreenerBacktest);
     $("#batchBtn").addEventListener("click", openBatch);
     $("#costBtn").addEventListener("click", openCostSensitivity);
+    $("#weightOptBtn").addEventListener("click", openWeightOpt);
     $("#wfBtn").addEventListener("click", runWalkForward);
     $("#optimizeBtn").addEventListener("click", runParamScan);
     $("#refreshHistory").addEventListener("click", loadHistory);
