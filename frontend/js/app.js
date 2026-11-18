@@ -14,6 +14,7 @@
     btFactors: [],
     compare: new Set(),
     indices: [],
+    universes: [],
     btResult: null,
     syncTimer: null,
     stockFilter: "",
@@ -238,12 +239,21 @@
     } catch (e) {
       state.indices = [];
     }
+    try {
+      const ud = await api("/api/universes");
+      state.universes = ud.items || [];
+    } catch (e) {
+      state.universes = [];
+    }
     const sel = $("#btBenchmark");
     if (!sel) return;
     const current = sel.value;
     sel.innerHTML = `<option value="universe">股票池等权</option><option value="market">全市场等权</option>` +
       state.indices.filter((i) => i.count > 30).map((i) =>
         `<option value="index:${esc(i.code)}">${esc(i.name)}</option>`
+      ).join("") +
+      state.universes.map((u) =>
+        `<option value="universe:${u.id}">自选池基准 · ${esc(u.name)}</option>`
       ).join("");
     if (current && Array.from(sel.options).some((o) => o.value === current)) sel.value = current;
   }
@@ -1488,7 +1498,9 @@
       ? "全市场等权"
       : (cfg.benchmark || "").startsWith("index:")
         ? ((state.indices.find((i) => "index:" + i.code === cfg.benchmark) || {}).name || "指数基准")
-        : "股票池等权");
+        : (cfg.benchmark || "").startsWith("universe:")
+          ? (state.universes.find((u) => "universe:" + u.id === cfg.benchmark) || {}).name || "自选池基准"
+          : "股票池等权");
     const weightLabel = { equal: "等权", score: "得分加权", inverse_vol: "波动率倒数", risk_parity: "风险平价" }[cfg.weighting] || "等权";
 
     $("#btResults").innerHTML = `

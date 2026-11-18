@@ -589,6 +589,29 @@ def _market_benchmark(dates: list[str], start: str, end: str) -> np.ndarray:
     return np.concatenate([[1.0], np.cumprod(1.0 + np.asarray(aligned))])
 
 
+def _custom_benchmark(dates: list[str], codes: list[str]) -> np.ndarray:
+    """自选股票池等权基准净值（按给定代码列表）。"""
+    if not codes:
+        raise ValueError("自定义基准为空")
+    sub = panel.build_panel(codes, dates[0], dates[-1])
+    sub_dates = sub["dates"]
+    if len(sub_dates) < 2:
+        return np.ones(len(dates))
+    close, valid = sub["close"], sub["valid"]
+    weights = valid.astype(np.float64)
+    weights /= np.maximum(weights.sum(axis=1, keepdims=True), 1.0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rets = close[1:] / close[:-1] - 1.0
+    rets = np.nan_to_num(rets, nan=0.0, posinf=0.0, neginf=0.0)
+    bench_rets = np.sum(weights[:-1] * rets, axis=1)
+    pos = {d: i for i, d in enumerate(sub_dates)}
+    aligned = []
+    for d in dates[1:]:
+        k = pos.get(d)
+        aligned.append(float(bench_rets[k - 1]) if k and k >= 1 else 0.0)
+    return np.concatenate([[1.0], np.cumprod(1.0 + np.asarray(aligned))])
+
+
 def _market_timing(dates: list[str], start: str, end: str, window: int) -> np.ndarray:
     """大盘择时：全市场等权指数在均线上方时持仓，否则空仓。"""
     if window <= 1:
@@ -1228,6 +1251,18 @@ def run_backtest(payload: dict) -> dict:
             benchmark_name = "全市场等权"
         except Exception:
             benchmark_type = "universe"
+    elif benchmark_type.startswith("universe:"):
+        try:
+            uid = int(benchmark_type.split(":", 1)[1])
+            found = next((u for u in database.list_universes() if u["id"] == uid), None)
+            if not found:
+                raise ValueError("自选池不存在")
+            bench = _custom_benchmark(dates, found["codes"])
+            sim["benchmark"] = bench
+            benchmark_name = f"{found['name']} 等权"
+        except Exception:
+            benchmark_type = "universe"
+            benchmark_name = "股票池等权"
     elif benchmark_type.startswith("index:"):
         code = benchmark_type.split(":", 1)[1]
         try:
