@@ -503,6 +503,10 @@
         <span class="chip">分年度 IC</span>
         ${res.ic_by_year.map((y) => `<span class="chip ${y.ic >= 0 ? "green" : "amber"}">${y.year} · ${fmtNum(y.ic, 3)}</span>`).join("")}
       </div>` : ""}
+      ${(res.stability || []).length ? `<div class="factor-meta" style="margin:8px 0 0">
+        <span class="chip">因子稳定性</span>
+        ${res.stability.map((s) => `<span class="chip ${s.autocorr >= 0.7 ? "green" : "amber"}">${s.lag} 日自相关 ${fmtNum(s.autocorr, 2)}</span>`).join("")}
+      </div>` : ""}
       <div id="icBlock"></div>
       <div id="icMonthBlock"></div>
       <div class="grid-2" style="margin-top:0">
@@ -819,6 +823,9 @@
       benchmark: $("#btBenchmark").value,
       weighting: $("#btWeighting").value,
       max_weight: Number($("#btMaxWeight").value) || 0,
+      market_timing: $("#btTiming").value !== "none",
+      timing_window: Number($("#btTiming").value) || 0,
+      oos_split: Number($("#btOOS").value) || 0,
       rebalance_days: Number($("#btRebalance").value),
       top_n: Number($("#btTopN").value) || 0,
       top_pct: Number($("#btTopPct").value) || 0.2,
@@ -867,6 +874,8 @@
     $("#btRebalance").value = String(tpl.rebalance);
     $("#btTopN").value = tpl.topN;
     $("#btBenchmark").value = tpl.benchmark;
+    $("#btTiming").value = "none";
+    $("#btOOS").value = "0";
     toast(`已应用策略模板：${tpl.label}`);
   }
 
@@ -1039,6 +1048,8 @@
     setVal("#btWeighting", cfg.weighting);
     setVal("#btMaxWeight", cfg.max_weight);
     setVal("#btBenchmark", cfg.benchmark);
+    setVal("#btTiming", cfg.market_timing ? String(cfg.timing_window || 20) : "none");
+    setVal("#btOOS", cfg.oos_split || 0);
     const filters = cfg.filters || {};
     $("#filterStar").checked = filters.exclude_star !== false;
     $("#filterBJ").checked = filters.exclude_bj !== false;
@@ -1144,6 +1155,8 @@
               <span class="chip">佣金 ${fmtNum(cfg.commission_bps, 1)} / 印花 ${fmtNum(cfg.stamp_duty_bps || 0, 1)} / 滑点 ${fmtNum(cfg.slippage_bps || 0, 1)} bps</span>
               <span class="chip">${weightLabel}${cfg.max_weight > 0 ? " · 上限 " + cfg.max_weight + "%" : ""}</span>
               ${cfg.long_short ? `<span class="chip amber">多空</span>` : ""}
+              ${cfg.market_timing ? `<span class="chip amber">MA${cfg.timing_window || 20} 择时</span>` : ""}
+              ${cfg.oos_split > 0 ? `<span class="chip">样本外 ${Math.round(cfg.oos_split * 100)}%</span>` : ""}
               <span class="chip green">基准 · ${benchName}</span>
             </div>
             <div class="factor-meta" style="margin:7px 0 0">
@@ -1187,14 +1200,51 @@
         <div id="heatmap" class="heatmap"></div>
       </div>
 
+      ${res.oos ? `<div class="panel">
+        <div class="chart-title-row"><div><div class="panel-title" style="font-size:13px">样本内 / 样本外检验</div><div class="panel-sub">分界日 ${esc(res.oos.split_date)}</div></div></div>
+        <div class="grid-2">
+          <div>
+            <div class="panel-sub" style="margin-bottom:8px">样本内</div>
+            <div class="grid-3">
+              ${[["年化收益", fmtPct(res.oos.in_sample.annual_return)], ["夏普", fmtNum(res.oos.in_sample.sharpe)], ["最大回撤", fmtPct(res.oos.in_sample.max_drawdown)]].map(([k, v]) => `<div class="perf"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("")}
+            </div>
+          </div>
+          <div>
+            <div class="panel-sub" style="margin-bottom:8px">样本外</div>
+            <div class="grid-3">
+              ${[["年化收益", fmtPct(res.oos.out_of_sample.annual_return)], ["夏普", fmtNum(res.oos.out_of_sample.sharpe)], ["最大回撤", fmtPct(res.oos.out_of_sample.max_drawdown)]].map(([k, v]) => `<div class="perf"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("")}
+            </div>
+          </div>
+        </div>
+      </div>` : ""}
+
       <div class="panel" id="industryPanel">
         <div class="chart-title-row"><div><div class="panel-title" style="font-size:13px">行业暴露</div><div class="panel-sub">最近一次调仓的行业净权重</div></div></div>
         <div class="chart-wrap"><canvas id="industryChart"></canvas></div>
       </div>
 
+      <div class="panel" id="attributionPanel">
+        <div class="chart-title-row"><div><div class="panel-title" style="font-size:13px">收益归因</div><div class="panel-sub">个股与行业对区间收益的累计贡献</div></div></div>
+        <div class="grid-2">
+          <div class="chart-wrap"><canvas id="attrChart"></canvas></div>
+          <div class="table-wrap" style="max-height:230px">
+            <table><thead><tr><th>行业</th><th style="text-align:right">贡献</th></tr></thead>
+            <tbody>${((res.attribution && res.attribution.industries) || []).map((r) => `<tr style="cursor:default"><td>${esc(r.industry)}</td><td style="text-align:right" class="num-mono ${r.contribution >= 0 ? "up" : "down"}">${fmtPct(r.contribution)}</td></tr>`).join("")}</tbody></table>
+          </div>
+        </div>
+      </div>
+
       <div class="panel">
         <div class="chart-title-row"><div><div class="panel-title" style="font-size:13px">调仓持仓</div><div class="panel-sub">最近 ${res.holdings.length} 次调仓的持仓明细（权重）</div></div></div>
         <div class="holdings-grid" id="holdingsGrid"></div>
+      </div>
+
+      <div class="panel" id="tradesPanel">
+        <div class="chart-title-row"><div><div class="panel-title" style="font-size:13px">交易明细</div><div class="panel-sub">最近调仓的主要买卖变化</div></div></div>
+        <div class="table-wrap" style="max-height:300px">
+          <table><thead><tr><th>日期</th><th>方向</th><th>股票</th><th style="text-align:right">权重变化</th></tr></thead>
+          <tbody>${((res.trades) || []).flatMap((t) => t.items.map((i) => `<tr style="cursor:default"><td class="num-mono">${esc(t.date)}</td><td><span class="chip ${i.side === "买入" ? "green" : "amber"}">${i.side}</span></td><td>${esc(i.name)} <span class="cd">${esc(i.code)}</span></td><td style="text-align:right" class="num-mono ${i.change > 0 ? "up" : "down"}">${(i.change * 100).toFixed(2)}%</td></tr>`)).join("")}</tbody></table>
+        </div>
       </div>`;
 
     Charts.line($("#equityChart"), {
@@ -1228,6 +1278,23 @@
       });
     } else {
       const panel = $("#industryPanel");
+      if (panel) panel.style.display = "none";
+    }
+
+    const attrStocks = (res.attribution && res.attribution.stocks) || [];
+    if (attrStocks.length) {
+      const top = attrStocks.slice(0, 8);
+      Charts.bar($("#attrChart"), {
+        labels: top.map((s) => s.name),
+        values: top.map((s) => s.contribution * 100),
+        height: 230, colorsByValue: true, yFmt: (v) => v.toFixed(1) + "%", includeZero: true,
+      });
+    } else {
+      const panel = $("#attributionPanel");
+      if (panel) panel.style.display = "none";
+    }
+    if (!res.trades || !res.trades.length) {
+      const panel = $("#tradesPanel");
       if (panel) panel.style.display = "none";
     }
     const exportBtn = $("#exportCsv");

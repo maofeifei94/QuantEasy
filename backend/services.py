@@ -435,6 +435,100 @@ def _market_benchmark(dates: list[str], start: str, end: str) -> np.ndarray:
     return np.concatenate([[1.0], np.cumprod(1.0 + np.asarray(aligned))])
 
 
+def _market_timing(dates: list[str], start: str, end: str, window: int) -> np.ndarray:
+    """大盘择时：全市场等权指数在均线上方时持仓，否则空仓。"""
+    if window <= 1:
+        return np.ones(len(dates))
+    allp = panel.build_panel(None, start, end)
+    ad = allp["dates"]
+    if len(ad) < 2:
+        return np.ones(len(dates))
+    close, valid = allp["close"], allp["valid"]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rets = close[1:] / close[:-1] - 1.0
+    rets = np.nan_to_num(rets, nan=0.0, posinf=0.0, neginf=0.0)
+    w = valid[:-1].astype(np.float64)
+    mkt = np.sum(w * rets, axis=1) / np.maximum(w.sum(axis=1), 1.0)
+    nav = np.concatenate([[1.0], np.cumprod(1.0 + mkt)])
+    cs = np.cumsum(np.concatenate([[0.0], nav]))
+    ma = np.full_like(nav, np.nan)
+    if len(nav) >= window:
+        ma[window - 1:] = (cs[window:] - cs[:-window]) / window
+    sig = np.where(np.isnan(ma), 1.0, (nav > ma).astype(np.float64))
+    pos = {d: i for i, d in enumerate(ad)}
+    return np.array([sig[pos[d]] if d in pos else 1.0 for d in dates], dtype=np.float64)
+
+
+def _attribution(weights: np.ndarray, close: np.ndarray, codes: list[str],
+                 names: dict[str, str], industries: dict[str, str]) -> dict:
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rets = close[1:] / close[:-1] - 1.0
+    rets = np.nan_to_num(rets, nan=0.0, posinf=0.0, neginf=0.0)
+    contrib = weights[:-1] * rets
+    per_stock = np.nansum(contrib, axis=0)
+    order = np.argsort(-np.abs(per_stock))[:12]
+    stocks = [
+        {
+            "code": codes[j],
+            "name": names.get(codes[j], codes[j]),
+            "industry": industries.get(codes[j], "未分类"),
+            "contribution": round(float(per_stock[j]), 4),
+        }
+        for j in order
+    ]
+    by_ind: dict[str, float] = {}
+    for j, code in enumerate(codes):
+        ind = industries.get(code, "未分类")
+        by_ind[ind] = by_ind.get(ind, 0.0) + float(per_stock[j])
+    industry_rows = sorted(
+        ({"industry": k, "contribution": round(v, 4)} for k, v in by_ind.items()),
+        key=lambda x: -abs(x["contribution"]),
+    )[:10]
+    return {"stocks": stocks, "industries": industry_rows}
+
+
+def _trades(weights: np.ndarray, rebalance: np.ndarray, dates: list[str],
+            codes: list[str], names: dict[str, str], limit: int = 6) -> list[dict]:
+    idxs = np.where(rebalance)[0][-limit:]
+    out = []
+    for i in idxs:
+        prev = weights[i - 1] if i > 0 else np.zeros_like(weights[i])
+        delta = weights[i] - prev
+        order = np.argsort(-np.abs(delta))[:8]
+        items = [
+            {
+                "code": codes[j],
+                "name": names.get(codes[j], codes[j]),
+                "side": "买入" if delta[j] > 0 else "卖出",
+                "change": round(float(delta[j]), 4),
+            }
+            for j in order if abs(delta[j]) > 0.004
+        ]
+        if items:
+            out.append({"date": dates[i], "items": items})
+    return out
+
+
+def _segment_metrics(net: np.ndarray, nav: np.ndarray) -> dict:
+    net = np.asarray(net, dtype=np.float64)
+    nav = np.asarray(nav, dtype=np.float64)
+    n = max(len(net), 1)
+    if len(nav) < 2 or nav[0] <= 0:
+        return {"annual_return": 0.0, "sharpe": 0.0, "max_drawdown": 0.0, "win_rate": 0.0}
+    ann = float((nav[-1] / nav[0]) ** (252 / n) - 1)
+    std = float(np.std(net))
+    sharpe = float(np.mean(net) / std * np.sqrt(252)) if std > 1e-12 else 0.0
+    peak = np.maximum.accumulate(nav)
+    max_dd = float(np.min(nav / peak - 1))
+    win = float(np.mean(net > 0)) if n else 0.0
+    return {
+        "annual_return": round(ann, 4),
+        "sharpe": round(sharpe, 3),
+        "max_drawdown": round(max_dd, 4),
+        "win_rate": round(win, 3),
+    }
+
+
 def _extended_metrics(net: np.ndarray, bench_nav: np.ndarray,
                       monthly: list[dict], nav: np.ndarray | None = None) -> dict:
     out: dict[str, float] = {}
@@ -538,13 +632,15 @@ def run_backtest(payload: dict) -> dict:
         weighting = "equal"
     max_weight = float(payload.get("max_weight") or 0) / 100.0
     vol = _rolling_vol(data["returns"]) if weighting == "inverse_vol" else None
+    timing_window = int(payload.get("timing_window") or 0) if payload.get("market_timing") else 0
+    timing = _market_timing(dates, dates[0], dates[-1], timing_window) if timing_window > 1 else None
 
     sim = bt_engine.run_backtest(
         score=score, close=close, valid=valid, rebalance=rebalance,
         top_frac=top_frac, top_n=top_n, long_short=long_short,
         commission=commission, stamp_duty=stamp_duty, slippage=slippage,
         weighting=weighting,
-        max_weight=max_weight, vol=vol,
+        max_weight=max_weight, vol=vol, timing=timing,
     )
     bench = sim["benchmark"]
     if benchmark_type == "market":
@@ -575,6 +671,21 @@ def run_backtest(payload: dict) -> dict:
         (np.abs(w[rebalance]) > 1e-6).sum(axis=1)
     )) if rebalance.any() else 0
 
+    oos = None
+    split = float(payload.get("oos_split") or 0)
+    if 0.05 < split < 0.95:
+        total = len(dates)
+        k = max(30, min(total - 30, int(total * (1.0 - split))))
+        net_arr = np.asarray(sim["returns"], dtype=np.float64)
+        nav_arr = np.asarray(sim["nav"], dtype=np.float64)
+        oos = {
+            "split_date": dates[k],
+            "in_sample": _segment_metrics(net_arr[:k - 1], nav_arr[:k] / nav_arr[0]),
+            "out_of_sample": _segment_metrics(net_arr[k - 1:], nav_arr[k:] / nav_arr[k]),
+        }
+
+    attribution = _attribution(w, close, codes, data["names"], data["industries"])
+
     analysis_res = analysis.analyze(
         score, close, valid, dates, codes, data["names"], horizon=5,
     )
@@ -594,6 +705,9 @@ def run_backtest(payload: dict) -> dict:
         "monthly": monthly,
         "holdings": _holdings(dates, w, rebalance, data["names"], codes),
         "industry_exposure": _industry_exposure(w, rebalance, codes, data["industries"]),
+        "attribution": attribution,
+        "trades": _trades(w, rebalance, dates, codes, data["names"]),
+        "oos": oos,
         "factor": {
             "label": factor["label"],
             "expression": factor["expression"],
@@ -629,6 +743,9 @@ def run_backtest(payload: dict) -> dict:
             "benchmark": benchmark_type,
             "weighting": weighting,
             "max_weight": max_weight * 100,
+            "market_timing": timing_window > 1,
+            "timing_window": timing_window,
+            "oos_split": split,
             "filters": payload.get("filters") or {},
             "preprocess": factor["preprocess"],
             "factors": factor["factors"],
@@ -670,6 +787,9 @@ def optimize_backtest(payload: dict) -> dict:
         weighting = "equal"
     max_weight = float(payload.get("max_weight") or 0) / 100.0
     vol = _rolling_vol(data["returns"]) if weighting == "inverse_vol" else None
+    timing_window = int(payload.get("timing_window") or 0) if payload.get("market_timing") else 0
+    timing = _market_timing(data["dates"], data["dates"][0], data["dates"][-1],
+                            timing_window) if timing_window > 1 else None
 
     cells = []
     for freq in rebs:
@@ -680,7 +800,7 @@ def optimize_backtest(payload: dict) -> dict:
                 top_frac=0.2, top_n=top_n, long_short=long_short,
                 commission=commission, stamp_duty=stamp_duty, slippage=slippage,
                 weighting=weighting,
-                max_weight=max_weight, vol=vol,
+                max_weight=max_weight, vol=vol, timing=timing,
             )
             m = sim["metrics"]
             cells.append({

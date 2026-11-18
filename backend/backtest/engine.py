@@ -42,6 +42,7 @@ def _target_weights(
     weighting: str,
     max_weight: float,
     vol: jnp.ndarray,
+    timing: jnp.ndarray,
 ):
     T, N = score.shape
     clean = jnp.where(valid, jnp.nan_to_num(score, nan=NEG_INF, posinf=1e30, neginf=NEG_INF), NEG_INF)
@@ -70,7 +71,7 @@ def _target_weights(
             net = jnp.sum(jnp.abs(weights), axis=1, keepdims=True)
             weights = weights / jnp.maximum(net, 1e-12)
 
-    target = jnp.where(rebalance[:, None], weights, 0.0)
+    target = jnp.where(rebalance[:, None], weights * timing[:, None], 0.0)
     return target
 
 
@@ -89,11 +90,12 @@ def _simulate(
     weighting: str,
     max_weight: float,
     vol: jnp.ndarray,
+    timing: jnp.ndarray,
 ):
     T, N = score.shape
     target = _target_weights(
         score, valid, rebalance, top_frac, top_n, long_short,
-        weighting, max_weight, vol,
+        weighting, max_weight, vol, timing,
     )
 
     def fill(w_prev, inputs):
@@ -172,18 +174,20 @@ def run_backtest(
     weighting: str = "equal",
     max_weight: float = 0.0,
     vol: np.ndarray | None = None,
+    timing: np.ndarray | None = None,
 ) -> dict[str, Any]:
     score_j = jnp.asarray(score, dtype=jnp.float64)
     close_j = jnp.asarray(close, dtype=jnp.float64)
     valid_j = jnp.asarray(valid, dtype=bool)
     reb_j = jnp.asarray(rebalance, dtype=bool)
     vol_j = jnp.asarray(vol if vol is not None else np.ones_like(close), dtype=jnp.float64)
+    timing_j = jnp.asarray(timing if timing is not None else np.ones(close.shape[0]), dtype=jnp.float64)
 
     nav, bench, net, drawdown, dw, W = _simulate(
         score_j, close_j, valid_j, reb_j,
         float(top_frac), int(top_n), bool(long_short), float(commission),
         float(stamp_duty), float(slippage),
-        str(weighting), float(max_weight), vol_j,
+        str(weighting), float(max_weight), vol_j, timing_j,
     )
     m = _metrics(net, nav, dw)
 

@@ -154,6 +154,7 @@ def analyze(score: np.ndarray, close: np.ndarray, valid: np.ndarray,
         "ic_decay": ic_decay,
         "quantile_returns": quantile_returns,
         "quantile_nav": quantile_nav(score, close, valid, dates),
+        "stability": factor_stability(score, valid),
         "sample_series": sample,
         "stats": {
             "coverage": round(coverage, 3),
@@ -161,6 +162,29 @@ def analyze(score: np.ndarray, close: np.ndarray, valid: np.ndarray,
             "std": round(float(finite_score.std()), 5) if finite_score.size else 0.0,
         },
     }
+
+
+def factor_stability(score: np.ndarray, valid: np.ndarray,
+                     lags: tuple[int, ...] = (1, 5, 20)) -> list[dict]:
+    """因子截面排名的自相关，衡量信号稳定性与隐式换手。"""
+    T = score.shape[0]
+    out = []
+    for lag in lags:
+        corrs = []
+        for t in range(T - lag):
+            mask = valid[t] & valid[t + lag] & np.isfinite(score[t]) & np.isfinite(score[t + lag])
+            if mask.sum() < 10:
+                continue
+            c = _row_corr(score[t][mask], score[t + lag][mask])
+            if np.isfinite(c):
+                corrs.append(c)
+        mean = float(np.mean(corrs)) if corrs else 0.0
+        out.append({
+            "lag": lag,
+            "autocorr": round(mean, 3),
+            "turnover": round(max(0.0, 1.0 - mean), 3),
+        })
+    return out
 
 
 def quantile_nav(score: np.ndarray, close: np.ndarray, valid: np.ndarray,

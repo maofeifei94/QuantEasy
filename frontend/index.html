@@ -370,12 +370,30 @@
               <input type="number" id="btMaxWeight" value="0" min="0" max="100">
             </div>
           </div>
-          <div class="field" style="margin-top:12px">
-            <label>业绩基准</label>
-            <select id="btBenchmark">
-              <option value="universe">股票池等权</option>
-              <option value="market">全市场等权</option>
-            </select>
+          <div class="form-grid">
+            <div class="field">
+              <label>业绩基准</label>
+              <select id="btBenchmark">
+                <option value="universe">股票池等权</option>
+                <option value="market">全市场等权</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>大盘择时</label>
+              <select id="btTiming">
+                <option value="none">关闭</option>
+                <option value="20">MA20 择时</option>
+                <option value="60">MA60 择时</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>样本外比例</label>
+              <select id="btOOS">
+                <option value="0">不拆分</option>
+                <option value="0.3">后 30% 样本外</option>
+                <option value="0.4">后 40% 样本外</option>
+              </select>
+            </div>
           </div>
           <div class="form-row" style="margin-top:14px;justify-content:space-between">
             <label class="switch">
