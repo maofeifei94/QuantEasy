@@ -19,9 +19,11 @@ SQLite，因子计算与回测由 **JAX** 向量化执行，前端为无构建�
 - **自定义因子**：受限表达式语法，如
   `rank(ts_mean(close, 20) / ts_mean(close, 60) - 1)`，服务端 AST 白名单校验，
   禁止导入/属性访问等危险操作。
-- **因子检验**：Rank IC 时间序列、IC 均值 / ICIR / 胜率、分年度 IC、IC 衰减、
+- **因子检验**：Rank IC 时间序列、IC 均值 / ICIR / 胜率、分年度与分行业 IC、IC 衰减、
   分位组合收益、单样本因子走势。
+- **因子工厂**：批量评估约 40 个候选表达式，按 |ICIR| 排序，一键收藏为自定义因子。
 - **股票池过滤**：剔除科创板/北交所、过滤当日涨停、最小日均成交额、最少上市天数。
+- **成交约束**：可模拟涨停无法买入、跌停无法卖出、停牌不可交易。
 - **组合构建**：等权 / 因子得分加权 / 波动率倒数加权，支持单票权重上限。
 - **交易成本**：佣金（双边）、印花税（卖出）、滑点分项建模，贴近 A 股实际交易成本。
 - **回测**：自选股票池、调仓周期、持仓数量/比例、多空组合、MA20/MA60 大盘择时；
@@ -74,7 +76,8 @@ PORT=8080 ./run.sh
 | 类别 | 函数 |
 | --- | --- |
 | 时序 | `ts_mean(x,n)` `ts_std(x,n)` `ts_sum(x,n)` `ts_min(x,n)` `ts_max(x,n)` `ts_rank(x,n)` |
-| 时序 | `ts_delay(x,n)` `ts_delta(x,n)` `ts_corr(x,y,n)` |
+| 时序 | `ts_delay(x,n)` `ts_delta(x,n)` `ts_corr(x,y,n)` `ts_zscore(x,n)` |
+| 时序 | `ts_skew(x,n)` `ts_kurt(x,n)` `ts_argmax(x,n)` `ts_argmin(x,n)` `decay_linear(x,n)` |
 | 截面 | `rank(x)` `zscore(x)` |
 | 数学 | `log abs sign sqrt exp tanh max min where clip safe_div` |
 
@@ -102,6 +105,7 @@ rank(ts_mean(volume, 5) / ts_mean(volume, 60))               # 量能放大
 | POST | `/api/factors` | 新建自定义因子 |
 | POST | `/api/factors/preview` | IC / 分位收益分析 |
 | POST | `/api/factors/correlation` | 多因子相关性矩阵 |
+| POST | `/api/factors/mine` | 因子工厂批量筛选 |
 | POST | `/api/backtest` | 运行回测并保存 |
 | POST | `/api/backtest/optimize` | 调仓周期 × 持仓数参数扫描 |
 | POST | `/api/signal` | 最新交易日目标持仓信号 |

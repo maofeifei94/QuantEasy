@@ -134,6 +134,74 @@ def ts_corr(x, y, n: int):
     return jnp.where(ok, cov / jnp.where(ok, denom, 1.0), jnp.nan)
 
 
+def ts_zscore(x, n: int):
+    mean = ts_mean(x, n)
+    std = ts_std(x, n)
+    return ( _as2d(x) - mean) / jnp.where(std > 1e-12, std, jnp.nan)
+
+
+def _moments(x, n: int):
+    filled, valid, cnt, ok = _masked(x, n)
+    c = jnp.maximum(cnt, 1.0)
+    m1 = _roll_sum(filled, n) / c
+    m2 = _roll_sum(filled * filled, n) / c
+    m3 = _roll_sum(filled * filled * filled, n) / c
+    m4 = _roll_sum(filled * filled * filled * filled, n) / c
+    return m1, m2, m3, m4, cnt, ok
+
+
+def ts_skew(x, n: int):
+    m1, m2, m3, _, cnt, ok = _moments(x, n)
+    var = jnp.maximum(m2 - m1 * m1, 1e-12)
+    std = jnp.sqrt(var)
+    skew = (m3 - 3 * m1 * m2 + 2 * m1 ** 3) / (std ** 3)
+    return jnp.where(ok & (cnt >= 5), skew, jnp.nan)
+
+
+def ts_kurt(x, n: int):
+    m1, m2, m3, m4, cnt, ok = _moments(x, n)
+    var = jnp.maximum(m2 - m1 * m1, 1e-12)
+    kurt = (m4 - 4 * m1 * m3 + 6 * m1 * m1 * m2 - 3 * m1 ** 4) / (var ** 2) - 3.0
+    return jnp.where(ok & (cnt >= 5), kurt, jnp.nan)
+
+
+def ts_argmax(x, n: int):
+    x = _as2d(x)
+    if x.shape[0] < n:
+        return jnp.full_like(x, jnp.nan)
+    win = jnp.lib.stride_tricks.sliding_window_view(x, n, axis=0)
+    win = jnp.where(jnp.isfinite(win), win, -jnp.inf)
+    pos = jnp.argmax(win, axis=-1).astype(jnp.float64) / max(n - 1, 1)
+    pad = jnp.full((n - 1,) + x.shape[1:], jnp.nan)
+    return jnp.concatenate([pad, pos], axis=0)
+
+
+def ts_argmin(x, n: int):
+    x = _as2d(x)
+    if x.shape[0] < n:
+        return jnp.full_like(x, jnp.nan)
+    win = jnp.lib.stride_tricks.sliding_window_view(x, n, axis=0)
+    win = jnp.where(jnp.isfinite(win), win, jnp.inf)
+    pos = jnp.argmin(win, axis=-1).astype(jnp.float64) / max(n - 1, 1)
+    pad = jnp.full((n - 1,) + x.shape[1:], jnp.nan)
+    return jnp.concatenate([pad, pos], axis=0)
+
+
+def decay_linear(x, n: int):
+    """线性衰减加权均值，越近的观测权重越大。"""
+    x = _as2d(x)
+    if x.shape[0] < n:
+        return jnp.full_like(x, jnp.nan)
+    win = jnp.lib.stride_tricks.sliding_window_view(x, n, axis=0)
+    valid = jnp.isfinite(win)
+    weights = jnp.arange(1, n + 1, dtype=jnp.float64)
+    num = jnp.sum(jnp.where(valid, win, 0.0) * weights, axis=-1)
+    den = jnp.sum(jnp.where(valid, weights, 0.0), axis=-1)
+    res = jnp.where(den > 0, num / jnp.maximum(den, 1e-12), jnp.nan)
+    pad = jnp.full((n - 1,) + x.shape[1:], jnp.nan)
+    return jnp.concatenate([pad, res], axis=0)
+
+
 def cs_rank(x):
     """截面排序分位（0~1），忽略 NaN。"""
     x = _as2d(x)
@@ -170,6 +238,12 @@ NAMESPACE = {
     "ts_delay": ts_delay,
     "ts_delta": ts_delta,
     "ts_corr": ts_corr,
+    "ts_zscore": ts_zscore,
+    "ts_skew": ts_skew,
+    "ts_kurt": ts_kurt,
+    "ts_argmax": ts_argmax,
+    "ts_argmin": ts_argmin,
+    "decay_linear": decay_linear,
     "rank": cs_rank,
     "zscore": cs_zscore,
     "log": jnp.log,

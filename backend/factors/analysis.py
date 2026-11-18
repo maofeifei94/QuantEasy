@@ -47,6 +47,26 @@ def daily_ic(score: np.ndarray, fwd: np.ndarray, min_stocks: int = 8):
     return values
 
 
+def quick_ic(score: np.ndarray, close: np.ndarray, valid: np.ndarray,
+             horizon: int = 5) -> dict:
+    """轻量 IC 统计，供因子工厂批量筛选使用。"""
+    fwd = _forward_returns(close, valid, horizon)
+    series = daily_ic(score, fwd)
+    vals = series[np.isfinite(series)]
+    if vals.size == 0:
+        return {"mean": 0.0, "ir": 0.0, "positive_rate": 0.0, "coverage": 0.0}
+    mean = float(vals.mean())
+    std = float(vals.std(ddof=1)) if vals.size > 1 else 0.0
+    ir = mean / std * np.sqrt(252 / max(horizon, 1)) if std > 1e-12 else 0.0
+    coverage = float(np.isfinite(score).sum() / max(valid.sum(), 1))
+    return {
+        "mean": round(mean, 4),
+        "ir": round(float(ir), 3),
+        "positive_rate": round(float((vals > 0).mean()), 3),
+        "coverage": round(coverage, 3),
+    }
+
+
 def analyze(score: np.ndarray, close: np.ndarray, valid: np.ndarray,
             dates: list[str], codes: list[str], names: dict[str, str],
             horizon: int = 5, industries: dict[str, str] | None = None) -> dict:

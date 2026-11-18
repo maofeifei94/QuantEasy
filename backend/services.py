@@ -379,6 +379,47 @@ def factor_correlation(payload: dict) -> dict:
     }
 
 
+def mine_factors(payload: dict) -> dict:
+    """因子工厂：批量评估候选表达式，按 ICIR 排序。"""
+    from .factors.factory import CANDIDATES
+
+    codes = payload.get("codes") or None
+    data = panel.build_panel(codes, payload.get("start") or None, payload.get("end") or None)
+    valid = data["valid"]
+    horizon = int(payload.get("horizon") or 5)
+    limit = min(int(payload.get("limit") or 12), len(CANDIDATES))
+
+    items = []
+    for cand in CANDIDATES:
+        try:
+            score = np.asarray(compute(cand["expression"], data))
+            stats = analysis.quick_ic(score, data["close"], valid, horizon)
+        except Exception:
+            continue
+        if stats["coverage"] < 0.2:
+            continue
+        direction = 1 if stats["mean"] >= 0 else -1
+        items.append({
+            **cand,
+            "direction": direction,
+            "ic": round(abs(stats["mean"]), 4),
+            "icir": round(abs(stats["ir"]), 3),
+            "positive_rate": stats["positive_rate"],
+            "coverage": stats["coverage"],
+        })
+    items.sort(key=lambda x: -x["icir"])
+    return {
+        "horizon": horizon,
+        "universe": {
+            "stocks": len(data["codes"]),
+            "start": data["dates"][0],
+            "end": data["dates"][-1],
+            "days": len(data["dates"]),
+        },
+        "items": items[:limit],
+    }
+
+
 # --------------------------------------------------------------------------- #
 # 回测
 # --------------------------------------------------------------------------- #
@@ -834,6 +875,13 @@ def run_backtest(payload: dict) -> dict:
     vol = _rolling_vol(data["returns"]) if weighting == "inverse_vol" else None
     timing_window = int(payload.get("timing_window") or 0) if payload.get("market_timing") else 0
     timing = _market_timing(dates, dates[0], dates[-1], timing_window) if timing_window > 1 else None
+    trade_constraints = bool(payload.get("trade_constraints"))
+    buy_block = sell_block = None
+    if trade_constraints:
+        rets = data["returns"]
+        volume = data["volume"]
+        buy_block = (rets >= 0.095) | (volume <= 0)
+        sell_block = (rets <= -0.095) | (volume <= 0)
 
     sim = bt_engine.run_backtest(
         score=score, close=close, valid=valid, rebalance=rebalance,
@@ -841,6 +889,7 @@ def run_backtest(payload: dict) -> dict:
         commission=commission, stamp_duty=stamp_duty, slippage=slippage,
         weighting=weighting,
         max_weight=max_weight, vol=vol, timing=timing,
+        buy_block=buy_block, sell_block=sell_block, constraints=trade_constraints,
     )
     bench = sim["benchmark"]
     benchmark_name = "股票池等权"
@@ -965,6 +1014,7 @@ def run_backtest(payload: dict) -> dict:
             "max_weight": max_weight * 100,
             "market_timing": timing_window > 1,
             "timing_window": timing_window,
+            "trade_constraints": trade_constraints,
             "oos_split": split,
             "filters": payload.get("filters") or {},
             "preprocess": factor["preprocess"],
@@ -1010,6 +1060,13 @@ def optimize_backtest(payload: dict) -> dict:
     timing_window = int(payload.get("timing_window") or 0) if payload.get("market_timing") else 0
     timing = _market_timing(data["dates"], data["dates"][0], data["dates"][-1],
                             timing_window) if timing_window > 1 else None
+    trade_constraints = bool(payload.get("trade_constraints"))
+    buy_block = sell_block = None
+    if trade_constraints:
+        rets = data["returns"]
+        volume = data["volume"]
+        buy_block = (rets >= 0.095) | (volume <= 0)
+        sell_block = (rets <= -0.095) | (volume <= 0)
 
     cells = []
     for freq in rebs:
@@ -1021,6 +1078,7 @@ def optimize_backtest(payload: dict) -> dict:
                 commission=commission, stamp_duty=stamp_duty, slippage=slippage,
                 weighting=weighting,
                 max_weight=max_weight, vol=vol, timing=timing,
+                buy_block=buy_block, sell_block=sell_block, constraints=trade_constraints,
             )
             m = sim["metrics"]
             cells.append({

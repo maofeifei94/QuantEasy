@@ -75,7 +75,7 @@ def _target_weights(
     return target
 
 
-@partial(jax.jit, static_argnames=("top_n", "long_short", "weighting", "max_weight"))
+@partial(jax.jit, static_argnames=("top_n", "long_short", "weighting", "max_weight", "constraints"))
 def _simulate(
     score: jnp.ndarray,
     close: jnp.ndarray,
@@ -91,6 +91,9 @@ def _simulate(
     max_weight: float,
     vol: jnp.ndarray,
     timing: jnp.ndarray,
+    buy_block: jnp.ndarray,
+    sell_block: jnp.ndarray,
+    constraints: bool,
 ):
     T, N = score.shape
     target = _target_weights(
@@ -99,11 +102,17 @@ def _simulate(
     )
 
     def fill(w_prev, inputs):
-        tgt, rb = inputs
-        w = jnp.where(rb, tgt, w_prev)
-        return w, w
+        tgt, rb, bb, sb = inputs
+        desired = jnp.where(rb, tgt, w_prev)
+        if constraints:
+            adjusted = jnp.where(
+                bb & (tgt > w_prev), w_prev,
+                jnp.where(sb & (tgt < w_prev), w_prev, tgt),
+            )
+            desired = jnp.where(rb, adjusted, w_prev)
+        return desired, desired
 
-    _, W = jax.lax.scan(fill, jnp.zeros(N), (target, rebalance))
+    _, W = jax.lax.scan(fill, jnp.zeros(N), (target, rebalance, buy_block, sell_block))
 
     prev_c, next_c = close[:-1], close[1:]
     rets = next_c / prev_c - 1.0
@@ -175,6 +184,9 @@ def run_backtest(
     max_weight: float = 0.0,
     vol: np.ndarray | None = None,
     timing: np.ndarray | None = None,
+    buy_block: np.ndarray | None = None,
+    sell_block: np.ndarray | None = None,
+    constraints: bool = False,
 ) -> dict[str, Any]:
     score_j = jnp.asarray(score, dtype=jnp.float64)
     close_j = jnp.asarray(close, dtype=jnp.float64)
@@ -182,12 +194,15 @@ def run_backtest(
     reb_j = jnp.asarray(rebalance, dtype=bool)
     vol_j = jnp.asarray(vol if vol is not None else np.ones_like(close), dtype=jnp.float64)
     timing_j = jnp.asarray(timing if timing is not None else np.ones(close.shape[0]), dtype=jnp.float64)
+    buy_j = jnp.asarray(buy_block if buy_block is not None else np.zeros(close.shape, dtype=bool), dtype=bool)
+    sell_j = jnp.asarray(sell_block if sell_block is not None else np.zeros(close.shape, dtype=bool), dtype=bool)
 
     nav, bench, net, drawdown, dw, W = _simulate(
         score_j, close_j, valid_j, reb_j,
         float(top_frac), int(top_n), bool(long_short), float(commission),
         float(stamp_duty), float(slippage),
         str(weighting), float(max_weight), vol_j, timing_j,
+        buy_j, sell_j, bool(constraints),
     )
     m = _metrics(net, nav, dw)
 

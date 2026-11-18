@@ -617,6 +617,83 @@
     }
   }
 
+  /* ------------------------------ 因子工厂 ------------------------------ */
+  async function openFactory() {
+    openModal(`
+      <div class="modal-head"><div><h3>因子工厂</h3><div class="panel-sub" style="margin-top:3px">批量评估候选表达式，按 ICIR 排序</div></div>
+        <button class="icon-btn" data-close>✕</button></div>
+      <div class="empty" style="border:none;padding:60px 20px">
+        <span class="spinner" style="width:24px;height:24px;margin:0 auto 14px;display:block"></span>
+        <p>正在评估候选因子…</p>
+        <div class="sub">约 40 个候选表达式，首次运行需 JAX 编译</div>
+      </div>`, true);
+    try {
+      const res = await api("/api/factors/mine", {
+        method: "POST",
+        body: {
+          horizon: 5, limit: 14,
+          start: state.status && state.status.start_date,
+          end: state.status && state.status.end_date,
+        },
+      });
+      renderFactory(res);
+    } catch (e) {
+      closeModal();
+      toast(e.message, true);
+    }
+  }
+
+  function renderFactory(res) {
+    openModal(`
+      <div class="modal-head">
+        <div><h3>因子工厂</h3>
+          <div class="panel-sub" style="margin-top:3px">${res.universe.stocks} 只股票 · ${res.universe.start} → ${res.universe.end} · 预测 ${res.horizon} 日 · 按 |ICIR| 排序</div>
+        </div>
+        <button class="icon-btn" data-close>✕</button>
+      </div>
+      <div class="table-wrap" style="max-height:460px">
+        <table>
+          <thead><tr><th>因子</th><th>分类</th><th style="text-align:right">|IC|</th><th style="text-align:right">|ICIR|</th><th style="text-align:right">覆盖率</th><th>方向</th><th></th></tr></thead>
+          <tbody>
+            ${res.items.map((it, i) => `<tr style="cursor:default">
+              <td><span class="nm">${esc(it.label)}</span><div class="panel-sub" style="font-family:var(--mono);font-size:10px;max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(it.expression)}</div></td>
+              <td><span class="chip">${esc(it.category)}</span></td>
+              <td style="text-align:right" class="num-mono">${fmtNum(it.ic, 3)}</td>
+              <td style="text-align:right" class="num-mono">${fmtNum(it.icir, 2)}</td>
+              <td style="text-align:right" class="num-mono">${fmtPct(it.coverage, 0, false)}</td>
+              <td><span class="chip ${it.direction > 0 ? "green" : "amber"}">${it.direction > 0 ? "正向 ↑" : "反向 ↓"}</span></td>
+              <td><button class="btn sm" data-fac-save="${i}">收藏</button></td>
+            </tr>`).join("")}
+          </tbody>
+        </table>
+      </div>
+      <div class="modal-foot" style="justify-content:space-between;align-items:center">
+        <span class="panel-sub">收藏后可在回测与多因子组合中直接使用</span>
+        <button class="btn ghost" data-close>关闭</button>
+      </div>`, true);
+    $$("#modalBox [data-fac-save]").forEach((btn) => btn.addEventListener("click", async () => {
+      const item = res.items[Number(btn.dataset.facSave)];
+      btn.disabled = true;
+      try {
+        await api("/api/factors", {
+          method: "POST",
+          body: {
+            name: item.label,
+            expression: item.expression,
+            description: `因子工厂 · ${item.label}（ICIR ${item.icir}）`,
+            direction: item.direction,
+          },
+        });
+        btn.textContent = "已收藏";
+        await loadFactors();
+        toast(`已收藏因子「${item.label}」`);
+      } catch (e) {
+        btn.disabled = false;
+        toast(e.message, true);
+      }
+    }));
+  }
+
   function renderICMonthHeat(el, data) {
     const years = [...new Set(data.map((d) => d.year))].sort();
     const byKey = {};
@@ -689,7 +766,9 @@
         <button class="btn primary" id="nfSave">保存因子</button>
       </div>`);
     const fns = ["ts_mean(x, 20)", "ts_std(x, 20)", "ts_rank(x, 20)", "ts_delay(x, 20)",
-      "ts_delta(x, 5)", "ts_corr(x, y, 20)", "rank(x)", "zscore(x)", "where(cond, a, b)", "clip(x, -3, 3)"];
+      "ts_delta(x, 5)", "ts_corr(x, y, 20)", "ts_zscore(x, 20)", "ts_skew(x, 20)",
+      "ts_argmax(x, 20)", "decay_linear(x, 20)", "rank(x)", "zscore(x)",
+      "where(cond, a, b)", "clip(x, -3, 3)"];
     $("#fnChips").innerHTML = fns.map((f) => `<button type="button" data-fn="${esc(f)}">${esc(f)}</button>`).join("");
     $$("#fnChips button").forEach((b) => b.addEventListener("click", () => {
       const ta = $("#nfExpr");
@@ -916,6 +995,7 @@
       market_timing: $("#btTiming").value !== "none",
       timing_window: Number($("#btTiming").value) || 0,
       oos_split: Number($("#btOOS").value) || 0,
+      trade_constraints: $("#filterTrade").checked,
       rebalance_days: Number($("#btRebalance").value),
       top_n: Number($("#btTopN").value) || 0,
       top_pct: Number($("#btTopPct").value) || 0.2,
@@ -1144,6 +1224,7 @@
     $("#filterStar").checked = filters.exclude_star !== false;
     $("#filterBJ").checked = filters.exclude_bj !== false;
     $("#filterLimitUp").checked = !!filters.exclude_limit_up;
+    $("#filterTrade").checked = !!cfg.trade_constraints;
     setVal("#filterAmount", filters.min_amount);
     setVal("#filterDays", filters.min_list_days);
     const pre = cfg.preprocess || {};
@@ -1251,6 +1332,7 @@
               ${cfg.long_short ? `<span class="chip amber">多空</span>` : ""}
               ${cfg.market_timing ? `<span class="chip amber">MA${cfg.timing_window || 20} 择时</span>` : ""}
               ${cfg.oos_split > 0 ? `<span class="chip">样本外 ${Math.round(cfg.oos_split * 100)}%</span>` : ""}
+              ${cfg.trade_constraints ? `<span class="chip amber">涨跌停/停牌限制</span>` : ""}
               <span class="chip green">基准 · ${benchName}</span>
             </div>
             <div class="factor-meta" style="margin:7px 0 0">
@@ -1951,6 +2033,7 @@ th,td{border-bottom:1px solid #e8eef6;padding:6px 8px;text-align:left}th{color:#
     });
     $("#newFactorBtn").addEventListener("click", openFactorModal);
     $("#corrBtn").addEventListener("click", openCorrelationModal);
+    $("#factoryBtn").addEventListener("click", openFactory);
     $("#previewBtn").addEventListener("click", previewFactor);
     $("#addFactorBtn").addEventListener("click", addFactorToCombo);
     $("#icWeightBtn").addEventListener("click", autoWeightByIC);
