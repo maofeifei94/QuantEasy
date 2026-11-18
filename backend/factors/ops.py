@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import jax
+import numpy as np
 
 jax.config.update("jax_enable_x64", True)
 
@@ -224,6 +225,89 @@ def safe_div(a, b):
     return a / jnp.where(jnp.abs(b) > 1e-12, b, jnp.nan)
 
 
+def _group_ids(group, n: int) -> np.ndarray:
+    """把行业标签数组规范为 0..k-1 的整数分组，长度不符时视为单组。"""
+    arr = np.asarray(group).ravel()
+    if arr.size != n:
+        return np.zeros(n, dtype=np.int64)
+    _, inverse = np.unique(arr.astype(np.int64), return_inverse=True)
+    return inverse
+
+
+def cs_winsorize(x, n: float = 3.0):
+    """截面去极值：按 ±n 倍标准差截断。"""
+    x = np.asarray(_as2d(x), dtype=np.float64)
+    valid = np.isfinite(x)
+    cnt = np.maximum(valid.sum(axis=1, keepdims=True), 1)
+    mean = np.where(valid, x, 0.0).sum(axis=1, keepdims=True) / cnt
+    diff = np.where(valid, x - mean, 0.0)
+    std = np.sqrt((diff * diff).sum(axis=1, keepdims=True) / cnt)
+    k = max(float(n), 0.1)
+    lo = mean - k * np.maximum(std, 1e-12)
+    hi = mean + k * np.maximum(std, 1e-12)
+    return np.where(valid, np.clip(x, lo, hi), np.nan)
+
+
+def group_rank(x, group):
+    """行业内截面排名分位（0~1），group 传入 industry 变量。"""
+    x = np.asarray(_as2d(x), dtype=np.float64)
+    T, N = x.shape
+    gids = _group_ids(group, N)
+    out = np.full((T, N), np.nan)
+    rows = np.arange(T)[:, None]
+    for gid in np.unique(gids):
+        cols = np.where(gids == gid)[0]
+        if cols.size == 0:
+            continue
+        sub = x[:, cols]
+        valid = np.isfinite(sub)
+        order = np.argsort(np.where(valid, sub, np.inf), axis=1)
+        ranks = np.empty_like(order, dtype=np.float64)
+        ranks[rows, order] = np.arange(cols.size, dtype=np.float64)
+        cnt = valid.sum(axis=1, keepdims=True).astype(np.float64)
+        out[:, cols] = np.where(valid, (ranks + 0.5) / np.maximum(cnt, 1.0), np.nan)
+    return out
+
+
+def group_neutralize(x, group):
+    """行业内去均值（行业中性化）。"""
+    x = np.asarray(_as2d(x), dtype=np.float64)
+    T, N = x.shape
+    gids = _group_ids(group, N)
+    out = np.full((T, N), np.nan)
+    for gid in np.unique(gids):
+        cols = np.where(gids == gid)[0]
+        if cols.size == 0:
+            continue
+        sub = x[:, cols]
+        valid = np.isfinite(sub)
+        cnt = np.maximum(valid.sum(axis=1, keepdims=True), 1)
+        mean = np.where(valid, sub, 0.0).sum(axis=1, keepdims=True) / cnt
+        out[:, cols] = np.where(valid, sub - mean, np.nan)
+    return out
+
+
+def group_zscore(x, group):
+    """行业内标准化：(x - 行业均值) / 行业标准差。"""
+    x = np.asarray(_as2d(x), dtype=np.float64)
+    T, N = x.shape
+    gids = _group_ids(group, N)
+    out = np.full((T, N), np.nan)
+    for gid in np.unique(gids):
+        cols = np.where(gids == gid)[0]
+        if cols.size == 0:
+            continue
+        sub = x[:, cols]
+        valid = np.isfinite(sub)
+        cnt = np.maximum(valid.sum(axis=1, keepdims=True), 1)
+        mean = np.where(valid, sub, 0.0).sum(axis=1, keepdims=True) / cnt
+        diff = np.where(valid, sub - mean, 0.0)
+        std = np.sqrt((diff * diff).sum(axis=1, keepdims=True) / cnt)
+        out[:, cols] = np.where(valid & (std > 1e-12),
+                                diff / np.where(std > 1e-12, std, 1.0), np.nan)
+    return out
+
+
 NAMESPACE = {
     "ts_mean": ts_mean,
     "ts_std": ts_std,
@@ -242,6 +326,10 @@ NAMESPACE = {
     "decay_linear": decay_linear,
     "rank": cs_rank,
     "zscore": cs_zscore,
+    "cs_winsorize": cs_winsorize,
+    "group_rank": group_rank,
+    "group_neutralize": group_neutralize,
+    "group_zscore": group_zscore,
     "log": jnp.log,
     "abs": jnp.abs,
     "sign": jnp.sign,

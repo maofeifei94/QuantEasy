@@ -23,7 +23,9 @@ SQLite，因子计算与回测由 **JAX** 向量化执行，前端为无构建�
   极端收益、区间位置、RSI、双均线、量能稳定性），调整窗口参数即可自动生成表达式与因子名；
   **窗口扫描**可对模板的窗口参数（5–120 日）批量计算 ICIR 并绘出曲线，一键采用最优窗口；
   保存前「测试表达式」即时查看 IC / ICIR / t 值 / 覆盖率 / Q5-Q1 年化收益；
-  **因子库可导出/导入 JSON**，便于备份、迁移与团队共享（导入时校验表达式、按名称去重）。
+  **因子库可导出/导入 JSON**，便于备份、迁移与团队共享（导入时校验表达式、按名称去重）；
+  表达式新增分组算子 `group_rank / group_neutralize / group_zscore`（配合 `industry` 变量）与 `cs_winsorize`，
+  可直接编写行业中性因子。
 - **因子检验**：Rank IC 时间序列、IC 均值 / ICIR / t 统计量 / 胜率、分年度与分行业 IC、IC 衰减、
   可切换预测窗口（1/5/10/20 日）与分位分组数（3/5/10 组）的分位组合收益、分层净值、单样本因子走势。
 - **因子工厂**：批量评估约 40 个候选表达式，按 |ICIR| 排序，一键收藏为自定义因子。
@@ -105,8 +107,11 @@ PORT=8080 ./run.sh
 | 时序 | `ts_mean(x,n)` `ts_std(x,n)` `ts_sum(x,n)` `ts_min(x,n)` `ts_max(x,n)` `ts_rank(x,n)` |
 | 时序 | `ts_delay(x,n)` `ts_delta(x,n)` `ts_corr(x,y,n)` `ts_zscore(x,n)` |
 | 时序 | `ts_skew(x,n)` `ts_kurt(x,n)` `ts_argmax(x,n)` `ts_argmin(x,n)` `decay_linear(x,n)` |
-| 截面 | `rank(x)` `zscore(x)` |
+| 截面 | `rank(x)` `zscore(x)` `cs_winsorize(x,n)` |
+| 分组 | `group_rank(x, industry)` `group_neutralize(x, industry)` `group_zscore(x, industry)` |
 | 数学 | `log abs sign sqrt exp tanh max min where clip safe_div` |
+
+其中 `industry` 为行业分组变量，可直接在表达式中实现行业内排名与行业中性化。
 
 示例：
 

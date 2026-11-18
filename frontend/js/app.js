@@ -928,7 +928,7 @@
       </div>
       <div class="field" style="margin-top:12px"><label>描述</label><input id="nfDesc" type="text" placeholder="说明因子逻辑（可选）" value="${esc(existing ? (existing.description || "") : "")}"></div>
       <div style="margin-top:14px">
-        <div class="panel-sub">可用字段：<code style="color:var(--green)">open high low close volume amount vwap returns</code></div>
+        <div class="panel-sub">可用字段：<code style="color:var(--green)">open high low close volume amount vwap returns</code>；分组变量：<code style="color:var(--green)">industry</code>（配合 group_rank / group_neutralize / group_zscore）</div>
         <div class="fn-chips" id="fnChips"></div>
       </div>
       <div id="nfTest" class="hint-box" style="display:none;margin-top:12px"></div>
@@ -940,7 +940,8 @@
     const fns = ["ts_mean(x, 20)", "ts_std(x, 20)", "ts_rank(x, 20)", "ts_delay(x, 20)",
       "ts_delta(x, 5)", "ts_corr(x, y, 20)", "ts_zscore(x, 20)", "ts_skew(x, 20)",
       "ts_argmax(x, 20)", "decay_linear(x, 20)", "rank(x)", "zscore(x)",
-      "where(cond, a, b)", "clip(x, -3, 3)"];
+      "group_rank(x, industry)", "group_neutralize(x, industry)",
+      "cs_winsorize(x, 3)", "where(cond, a, b)", "clip(x, -3, 3)"];
     $("#fnChips").innerHTML = fns.map((f) => `<button type="button" data-fn="${esc(f)}">${esc(f)}</button>`).join("");
     $$("#fnChips button").forEach((b) => b.addEventListener("click", () => {
       const ta = $("#nfExpr");
