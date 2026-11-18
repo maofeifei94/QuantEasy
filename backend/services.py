@@ -951,6 +951,58 @@ def _extended_metrics(net: np.ndarray, bench_nav: np.ndarray,
     return out
 
 
+def _drawdown_episodes(dates: list[str], nav: np.ndarray, top: int = 5) -> dict | None:
+    """识别回撤区间：峰值 → 谷底 → 修复，输出最深的前若干个区间。"""
+    nav = np.asarray(nav, dtype=np.float64)
+    T = len(nav)
+    if T < 5:
+        return None
+    peak = nav[0]
+    peak_i = 0
+    episodes = []
+    i = 1
+    while i < T:
+        if nav[i] >= peak:
+            peak = nav[i]
+            peak_i = i
+            i += 1
+            continue
+        trough_i = i
+        j = i
+        while j < T and nav[j] < peak:
+            if nav[j] < nav[trough_i]:
+                trough_i = j
+            j += 1
+        recovered = j < T
+        depth = float(nav[trough_i] / peak - 1.0)
+        episodes.append({
+            "peak_date": dates[peak_i],
+            "trough_date": dates[trough_i],
+            "recovery_date": dates[j] if recovered else None,
+            "depth": round(depth, 4),
+            "days": int(trough_i - peak_i),
+            "recovery_days": int(j - trough_i) if recovered else None,
+            "recovered": recovered,
+        })
+        i = j
+        if j < T:
+            peak = nav[j]
+            peak_i = j
+    if not episodes:
+        return None
+    episodes.sort(key=lambda e: e["depth"])
+    recovered_days = [e["recovery_days"] for e in episodes if e["recovered"]]
+    peak_all = np.maximum.accumulate(nav)
+    current = float(nav[-1] / peak_all[-1] - 1.0)
+    return {
+        "items": episodes[:top],
+        "count": len(episodes),
+        "avg_recovery_days": round(float(np.mean(recovered_days)), 1) if recovered_days else None,
+        "current_drawdown": round(current, 4),
+        "recovered_ratio": round(len(recovered_days) / len(episodes), 3),
+    }
+
+
 def _style_exposure(weights: np.ndarray, data: dict, max_points: int = 160) -> dict | None:
     """组合在动量/反转/波动/流动性/Beta 上的截面标准化暴露时间序列。"""
     close = data["close"]
@@ -1192,6 +1244,7 @@ def run_backtest(payload: dict) -> dict:
         "nav": r(sim["nav"], 4),
         "benchmark": r(bench, 4),
         "drawdown": r(sim["drawdown"], 4),
+        "drawdowns": _drawdown_episodes(dates, np.asarray(sim["nav"])),
         "daily_returns": r(sim["returns"], 5),
         "turnover": r(sim["turnover"], 4),
         "metrics": metrics,

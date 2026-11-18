@@ -1552,6 +1552,25 @@
         </div>
       </div>
 
+      ${res.drawdowns ? `<div class="panel" id="ddEpisodesPanel">
+        <div class="chart-title-row"><div>
+          <div class="panel-title" style="font-size:13px">回撤区间分析</div>
+          <div class="panel-sub">共 ${res.drawdowns.count} 段回撤 · 平均修复 ${res.drawdowns.avg_recovery_days == null ? "—" : res.drawdowns.avg_recovery_days} 个交易日 · 当前回撤 ${fmtPct(res.drawdowns.current_drawdown)}</div>
+        </div></div>
+        <div class="table-wrap">
+          <table><thead><tr><th>#</th><th>峰值日</th><th>谷底日</th><th>修复日</th><th style="text-align:right">回撤幅度</th><th style="text-align:right">下跌天数</th><th style="text-align:right">修复天数</th></tr></thead>
+          <tbody>${res.drawdowns.items.map((e, k) => `<tr style="cursor:default">
+            <td class="num-mono">${k + 1}</td>
+            <td class="num-mono">${esc(e.peak_date)}</td>
+            <td class="num-mono">${esc(e.trough_date)}</td>
+            <td class="num-mono">${e.recovered ? esc(e.recovery_date) : "未修复"}</td>
+            <td style="text-align:right" class="num-mono down">${fmtPct(e.depth)}</td>
+            <td style="text-align:right" class="num-mono">${e.days}</td>
+            <td style="text-align:right" class="num-mono">${e.recovered ? e.recovery_days : "—"}</td>
+          </tr>`).join("")}</tbody></table>
+        </div>
+      </div>` : ""}
+
       ${res.rolling_risk ? `<div class="grid-2">
         <div class="panel">
           <div class="chart-title-row"><div><div class="panel-title" style="font-size:13px">滚动夏普（60 日）</div><div class="panel-sub">衡量策略风险调整后收益的时间稳定性</div></div></div>
