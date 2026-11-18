@@ -537,7 +537,7 @@
           <div class="panel-title" style="font-size:14px">${esc(res.factor.label)} · 因子检验</div>
           <div class="panel-sub">${res.universe.stocks} 只股票 / ${res.universe.days} 个交易日 · 预测窗口 ${res.horizon} 日</div>
         </div>
-        <span class="chip green">IC 均值 ${fmtNum(ic.mean, 3)}</span>
+        <span class="chip green">IC 均值 ${fmtNum(ic.mean, 3)} · t ${fmtNum(ic.t_stat, 2)}</span>
       </div>
       <div class="metric-cards">
         <div class="mcard"><div class="k">IC 均值</div><div class="v ${colorClass(ic.mean)}">${fmtNum(ic.mean, 3)}</div><div class="s">Spearman 秩相关</div></div>
@@ -1474,6 +1474,17 @@
         </div>
       </div>
 
+      ${res.rolling_risk ? `<div class="grid-2">
+        <div class="panel">
+          <div class="chart-title-row"><div><div class="panel-title" style="font-size:13px">滚动夏普（60 日）</div><div class="panel-sub">衡量策略风险调整后收益的时间稳定性</div></div></div>
+          <div class="chart-wrap"><canvas id="rollingChart"></canvas></div>
+        </div>
+        <div class="panel">
+          <div class="chart-title-row"><div><div class="panel-title" style="font-size:13px">日收益分布</div><div class="panel-sub">频次直方图 · 单位 %</div></div></div>
+          <div class="chart-wrap"><canvas id="histChart"></canvas></div>
+        </div>
+      </div>` : ""}
+
       <div class="panel">
         <div class="chart-title-row"><div><div class="panel-title" style="font-size:13px">月度收益热力图</div><div class="panel-sub">红色为正收益，绿色为负收益</div></div></div>
         <div id="heatmap" class="heatmap"></div>
@@ -1592,6 +1603,21 @@
 
     renderHeatmap(res.monthly);
     renderHoldings(res.holdings);
+
+    if (res.rolling_risk) {
+      Charts.line($("#rollingChart"), {
+        labels: res.rolling_risk.dates,
+        series: [{ name: "滚动夏普", data: res.rolling_risk.sharpe, color: "#6aa9ff" }],
+        height: 210, yFmt: (v) => v.toFixed(1), xFmt: shortDate, includeZero: true,
+      });
+    }
+    if (res.return_hist) {
+      Charts.bar($("#histChart"), {
+        labels: res.return_hist.labels,
+        values: res.return_hist.values,
+        height: 210, colors: ["#6aa9ff"], yFmt: (v) => String(v),
+      });
+    }
 
     const exposure = (res.industry_exposure || []).slice(0, 10);
     if (exposure.length) {

@@ -860,6 +860,40 @@ def _annual_returns(dates: list[str], nav: np.ndarray) -> list[dict]:
     return out
 
 
+def _rolling_risk(net: np.ndarray, dates: list[str], window: int = 60) -> dict | None:
+    """滚动 60 日夏普与年化波动率。"""
+    net = np.asarray(net, dtype=np.float64)
+    if len(net) < window:
+        return None
+    csum = np.cumsum(np.insert(net, 0, 0.0))
+    csq = np.cumsum(np.insert(net * net, 0, 0.0))
+    mean = (csum[window:] - csum[:-window]) / window
+    mean_sq = (csq[window:] - csq[:-window]) / window
+    var = np.maximum(mean_sq - mean * mean, 0.0)
+    std = np.sqrt(var)
+    sharpe = np.where(std > 1e-12, mean / std * np.sqrt(252), 0.0)
+    vol = std * np.sqrt(252)
+    return {
+        "window": window,
+        "dates": dates[window:],
+        "sharpe": [round(float(v), 3) for v in sharpe],
+        "volatility": [round(float(v), 4) for v in vol],
+    }
+
+
+def _return_hist(net: np.ndarray, bins: int = 15) -> dict | None:
+    net = np.asarray(net, dtype=np.float64)
+    if net.size < 30:
+        return None
+    counts, edges = np.histogram(net * 100, bins=bins)
+    centers = (edges[:-1] + edges[1:]) / 2
+    return {
+        "labels": [f"{c:.2f}" for c in centers],
+        "values": [int(c) for c in counts],
+        "centers": [round(float(c), 2) for c in centers],
+    }
+
+
 def _extended_metrics(net: np.ndarray, bench_nav: np.ndarray,
                       monthly: list[dict], nav: np.ndarray | None = None) -> dict:
     out: dict[str, float] = {}
@@ -1074,6 +1108,8 @@ def run_backtest(payload: dict) -> dict:
         "attribution": attribution,
         "brinson": brinson,
         "bootstrap": bootstrap,
+        "rolling_risk": _rolling_risk(np.asarray(sim["returns"]), dates),
+        "return_hist": _return_hist(np.asarray(sim["returns"])),
         "trades": _trades(w, rebalance, dates, codes, data["names"]),
         "oos": oos,
         "factor": {

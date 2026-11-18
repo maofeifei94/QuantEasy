@@ -76,6 +76,7 @@ def analyze(score: np.ndarray, close: np.ndarray, valid: np.ndarray,
     ic_mean = float(finite_ic.mean()) if finite_ic.size else 0.0
     ic_std = float(finite_ic.std(ddof=1)) if finite_ic.size > 1 else 0.0
     ic_ir = ic_mean / ic_std * np.sqrt(252 / max(horizon, 1)) if ic_std > 1e-12 else 0.0
+    ic_t = ic_mean / ic_std * np.sqrt(finite_ic.size) if ic_std > 1e-12 and finite_ic.size else 0.0
     positive = float((finite_ic > 0).mean()) if finite_ic.size else 0.0
 
     ic_decay = []
@@ -188,6 +189,7 @@ def analyze(score: np.ndarray, close: np.ndarray, valid: np.ndarray,
             "mean": round(ic_mean, 4),
             "std": round(ic_std, 4),
             "ir": round(float(ic_ir), 3),
+            "t_stat": round(float(ic_t), 2),
             "positive_rate": round(positive, 3),
             "series": ic_pairs,
         },
