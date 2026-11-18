@@ -15,7 +15,23 @@ import numpy as np
 NEG_INF = -1e30
 
 
-@partial(jax.jit, static_argnames=("top_n", "long_short"))
+def _bucket_weights(mask, ranks, k, n_valid, weighting: str, vol, short: bool):
+    """在入选股票内分配权重：等权 / 得分加权 / 波动率倒数加权。"""
+    if weighting == "score":
+        if short:
+            pos = ranks - (n_valid[:, None] - k[:, None])
+        else:
+            pos = k[:, None] - ranks
+        w = jnp.where(mask, jnp.maximum(pos, 0.0), 0.0)
+    elif weighting == "inverse_vol":
+        w = jnp.where(mask, 1.0 / jnp.maximum(vol, 1e-4), 0.0)
+    else:
+        w = mask.astype(jnp.float64)
+    total = jnp.sum(w, axis=1, keepdims=True)
+    return w / jnp.maximum(total, 1e-12)
+
+
+@partial(jax.jit, static_argnames=("top_n", "long_short", "weighting", "max_weight"))
 def _target_weights(
     score: jnp.ndarray,
     valid: jnp.ndarray,
@@ -23,6 +39,9 @@ def _target_weights(
     top_frac: float,
     top_n: int,
     long_short: bool,
+    weighting: str,
+    max_weight: float,
+    vol: jnp.ndarray,
 ):
     T, N = score.shape
     clean = jnp.where(valid, jnp.nan_to_num(score, nan=NEG_INF, posinf=1e30, neginf=NEG_INF), NEG_INF)
@@ -37,19 +56,25 @@ def _target_weights(
     k = jnp.clip(k, 0.0, n_valid)
 
     long_mask = (ranks < k[:, None]) & valid
-    long_w = long_mask / jnp.maximum(jnp.sum(long_mask, axis=1, keepdims=True), 1.0)
+    long_w = _bucket_weights(long_mask, ranks, k, n_valid, weighting, vol, short=False)
+    weights = long_w
     if long_short:
         short_mask = (ranks >= (n_valid[:, None] - k[:, None])) & valid & ~long_mask
-        short_w = short_mask / jnp.maximum(jnp.sum(short_mask, axis=1, keepdims=True), 1.0)
+        short_w = _bucket_weights(short_mask, ranks, k, n_valid, weighting, vol, short=True)
         weights = long_w - short_w
-    else:
-        weights = long_w
+
+    if max_weight > 0:
+        cap = jnp.maximum(max_weight, 1.0 / jnp.maximum(k[:, None], 1.0))
+        for _ in range(4):
+            weights = jnp.where(valid, jnp.clip(weights, -cap, cap), 0.0)
+            net = jnp.sum(jnp.abs(weights), axis=1, keepdims=True)
+            weights = weights / jnp.maximum(net, 1e-12)
 
     target = jnp.where(rebalance[:, None], weights, 0.0)
     return target
 
 
-@partial(jax.jit, static_argnames=("top_n", "long_short"))
+@partial(jax.jit, static_argnames=("top_n", "long_short", "weighting", "max_weight"))
 def _simulate(
     score: jnp.ndarray,
     close: jnp.ndarray,
@@ -59,9 +84,15 @@ def _simulate(
     top_n: int,
     long_short: bool,
     commission: float,
+    weighting: str,
+    max_weight: float,
+    vol: jnp.ndarray,
 ):
     T, N = score.shape
-    target = _target_weights(score, valid, rebalance, top_frac, top_n, long_short)
+    target = _target_weights(
+        score, valid, rebalance, top_frac, top_n, long_short,
+        weighting, max_weight, vol,
+    )
 
     def fill(w_prev, inputs):
         tgt, rb = inputs
@@ -130,15 +161,20 @@ def run_backtest(
     top_n: int = 0,
     long_short: bool = False,
     commission: float = 0.0015,
+    weighting: str = "equal",
+    max_weight: float = 0.0,
+    vol: np.ndarray | None = None,
 ) -> dict[str, Any]:
     score_j = jnp.asarray(score, dtype=jnp.float64)
     close_j = jnp.asarray(close, dtype=jnp.float64)
     valid_j = jnp.asarray(valid, dtype=bool)
     reb_j = jnp.asarray(rebalance, dtype=bool)
+    vol_j = jnp.asarray(vol if vol is not None else np.ones_like(close), dtype=jnp.float64)
 
     nav, bench, net, drawdown, dw, W = _simulate(
         score_j, close_j, valid_j, reb_j,
         float(top_frac), int(top_n), bool(long_short), float(commission),
+        str(weighting), float(max_weight), vol_j,
     )
     m = _metrics(net, nav, dw)
 

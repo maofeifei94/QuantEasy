@@ -508,6 +508,7 @@
         <div id="decayBlock"></div>
         <div id="quantileBlock"></div>
       </div>
+      <div id="qnavBlock"></div>
       <div id="sampleBlock"></div>`;
 
     const icBlock = document.createElement("div");
@@ -537,6 +538,24 @@
       values: res.quantile_returns.map((d) => d.return * 100),
       height: 200, colorsByValue: true, yFmt: (v) => v.toFixed(1) + "%", includeZero: true,
     });
+
+    const qnav = res.quantile_nav;
+    if (qnav && qnav.groups && qnav.groups.length) {
+      const qnavBlock = document.createElement("div");
+      qnavBlock.innerHTML = chartBlock("分层组合净值", "按因子值五等分，每日调仓等权持有 · 起点归一");
+      box.querySelector("#qnavBlock").appendChild(qnavBlock);
+      const palette = ["#6aa9ff", "#59c3c3", "#3ddc97", "#f5b56b", "#ff6b7a"];
+      Charts.line(qnavBlock.querySelector("canvas"), {
+        labels: qnav.dates,
+        series: qnav.groups.map((g, i) => ({
+          name: g.group,
+          color: palette[i % palette.length],
+          data: g.nav.map((v) => (v - 1) * 100),
+          width: g.group === "Q5" ? 2.1 : 1.5,
+        })),
+        height: 240, yFmt: (v) => v.toFixed(0) + "%", xFmt: shortDate,
+      });
+    }
 
     const sampleBlock = document.createElement("div");
     sampleBlock.innerHTML = chartBlock(
@@ -721,16 +740,60 @@
       filters: {
         exclude_star: $("#filterStar").checked,
         exclude_bj: $("#filterBJ").checked,
+        exclude_limit_up: $("#filterLimitUp").checked,
         min_amount: Number($("#filterAmount").value) || 0,
         min_list_days: Number($("#filterDays").value) || 0,
       },
       benchmark: $("#btBenchmark").value,
+      weighting: $("#btWeighting").value,
+      max_weight: Number($("#btMaxWeight").value) || 0,
       rebalance_days: Number($("#btRebalance").value),
       top_n: Number($("#btTopN").value) || 0,
       top_pct: Number($("#btTopPct").value) || 0.2,
       commission_bps: Number($("#btCost").value) || 0,
       long_short: $("#btLongShort").checked,
     };
+  }
+
+  const STRATEGY_TEMPLATES = {
+    momentum: {
+      label: "动量趋势",
+      factors: [["momentum_20", 1], ["momentum_60", 0.5]],
+      pre: { winsor: true, neutral: false, std: true },
+      rebalance: 10, topN: 15, benchmark: "market",
+    },
+    lowvol: {
+      label: "低波防御",
+      factors: [["volatility_20", 1], ["amplitude_20", 0.5]],
+      pre: { winsor: true, neutral: true, std: true },
+      rebalance: 21, topN: 20, benchmark: "market",
+    },
+    reversal: {
+      label: "短期反转",
+      factors: [["reversal_5", 1]],
+      pre: { winsor: true, neutral: true, std: true },
+      rebalance: 5, topN: 10, benchmark: "universe",
+    },
+    balanced: {
+      label: "多因子均衡",
+      factors: [["momentum_20", 1], ["volatility_20", 1], ["volume_ratio", 0.5]],
+      pre: { winsor: true, neutral: true, std: true },
+      rebalance: 10, topN: 15, benchmark: "market",
+    },
+  };
+
+  function applyTemplate(name) {
+    const tpl = STRATEGY_TEMPLATES[name];
+    if (!tpl) return;
+    state.btFactors = tpl.factors.map(([id, weight]) => ({ id, weight }));
+    renderCombo();
+    $("#ppWinsor").checked = tpl.pre.winsor;
+    $("#ppNeutral").checked = tpl.pre.neutral;
+    $("#ppStd").checked = tpl.pre.std;
+    $("#btRebalance").value = String(tpl.rebalance);
+    $("#btTopN").value = tpl.topN;
+    $("#btBenchmark").value = tpl.benchmark;
+    toast(`已应用策略模板：${tpl.label}`);
   }
 
   async function runBacktest() {
@@ -788,6 +851,12 @@
       ["Beta", fmtNum(m.beta), ""],
       ["索提诺", fmtNum(m.sortino), ""],
       ["年化换手", fmtNum(m.annual_turnover, 1) + "x", ""],
+      ["VaR 95%", fmtPct(m.var_95), "neg"],
+      ["CVaR 95%", fmtPct(m.cvar_95), "neg"],
+      ["上行捕获", fmtNum(m.up_capture, 2), ""],
+      ["下行捕获", fmtNum(m.down_capture, 2), ""],
+      ["最长回撤", (m.max_drawdown_days == null ? "—" : m.max_drawdown_days + " 天"), ""],
+      ["月度胜率", fmtPct(m.monthly_win_rate, 1, false), ""],
     ];
 
     const factorChips = (res.factor.factors || []).map((f) =>
@@ -800,6 +869,7 @@
       pre.standardize ? "标准化" : "",
     ].filter(Boolean).map((p) => `<span class="chip green">${p}</span>`).join("");
     const benchName = cfg.benchmark === "market" ? "全市场等权" : "股票池等权";
+    const weightLabel = { equal: "等权", score: "得分加权", inverse_vol: "波动率倒数" }[cfg.weighting] || "等权";
 
     $("#btResults").innerHTML = `
       <div class="panel">
@@ -812,14 +882,15 @@
               <span class="chip">${cfg.rebalance_days} 日调仓</span>
               <span class="chip">${cfg.top_n > 0 ? "持仓 " + cfg.top_n : "前 " + (cfg.top_pct * 100).toFixed(0) + "%"}</span>
               <span class="chip">成本 ${fmtNum(cfg.commission_bps, 0)} bps</span>
+              <span class="chip">${weightLabel}${cfg.max_weight > 0 ? " · 上限 " + cfg.max_weight + "%" : ""}</span>
               ${cfg.long_short ? `<span class="chip amber">多空</span>` : ""}
               <span class="chip green">基准 · ${benchName}</span>
-              <span class="chip green">已存入 SQLite</span>
             </div>
             <div class="factor-meta" style="margin:7px 0 0">
               ${factorChips}${preChips}
             </div>
           </div>
+          <button class="btn sm" id="exportCsv">导出 CSV</button>
         </div>
         <div class="perf-grid">
           ${perf.map(([k, v, cls]) => `<div class="perf"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`).join("")}
@@ -853,6 +924,11 @@
         <div id="heatmap" class="heatmap"></div>
       </div>
 
+      <div class="panel" id="industryPanel">
+        <div class="chart-title-row"><div><div class="panel-title" style="font-size:13px">行业暴露</div><div class="panel-sub">最近一次调仓的行业净权重</div></div></div>
+        <div class="chart-wrap"><canvas id="industryChart"></canvas></div>
+      </div>
+
       <div class="panel">
         <div class="chart-title-row"><div><div class="panel-title" style="font-size:13px">调仓持仓</div><div class="panel-sub">最近 ${res.holdings.length} 次调仓的持仓明细（权重）</div></div></div>
         <div class="holdings-grid" id="holdingsGrid"></div>
@@ -879,6 +955,44 @@
 
     renderHeatmap(res.monthly);
     renderHoldings(res.holdings);
+
+    const exposure = (res.industry_exposure || []).slice(0, 10);
+    if (exposure.length) {
+      Charts.bar($("#industryChart"), {
+        labels: exposure.map((e) => e.industry),
+        values: exposure.map((e) => e.last * 100),
+        height: 220, colorsByValue: true, yFmt: (v) => v.toFixed(1) + "%", includeZero: true,
+      });
+    } else {
+      const panel = $("#industryPanel");
+      if (panel) panel.style.display = "none";
+    }
+    const exportBtn = $("#exportCsv");
+    if (exportBtn) exportBtn.addEventListener("click", () => exportBacktestCsv(res));
+  }
+
+  function exportBacktestCsv(res) {
+    const rows = [["date", "nav", "benchmark", "drawdown", "daily_return"]];
+    res.dates.forEach((date, i) => {
+      rows.push([
+        date,
+        res.nav[i] == null ? "" : res.nav[i],
+        res.benchmark[i] == null ? "" : res.benchmark[i],
+        res.drawdown[i] == null ? "" : res.drawdown[i],
+        i === 0 || res.daily_returns[i - 1] == null ? "" : res.daily_returns[i - 1],
+      ]);
+    });
+    const csv = "\ufeff" + rows.map((row) => row.join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `backtest_${res.id || "latest"}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    toast("净值数据已导出 CSV");
   }
 
   function renderHeatmap(monthly) {
@@ -1236,6 +1350,7 @@
     $("#corrBtn").addEventListener("click", openCorrelationModal);
     $("#previewBtn").addEventListener("click", previewFactor);
     $("#addFactorBtn").addEventListener("click", addFactorToCombo);
+    $$(".tpl-btn").forEach((btn) => btn.addEventListener("click", () => applyTemplate(btn.dataset.tpl)));
     $("#runBacktestBtn").addEventListener("click", runBacktest);
     $("#optimizeBtn").addEventListener("click", runParamScan);
     $("#refreshHistory").addEventListener("click", loadHistory);

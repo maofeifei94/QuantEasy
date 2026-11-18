@@ -253,6 +253,13 @@
           <div class="panel-head" style="margin-bottom:12px">
             <div class="panel-title"><span class="num">CFG</span>回测配置</div>
           </div>
+          <div class="tpl-row" id="tplRow">
+            <span class="tpl-label">模板</span>
+            <button type="button" class="tpl-btn" data-tpl="momentum">动量趋势</button>
+            <button type="button" class="tpl-btn" data-tpl="lowvol">低波防御</button>
+            <button type="button" class="tpl-btn" data-tpl="reversal">短期反转</button>
+            <button type="button" class="tpl-btn" data-tpl="balanced">多因子均衡</button>
+          </div>
 
           <div class="field">
             <label>因子组合 <span class="hint" id="comboCount">多因子加权合成</span></label>
@@ -309,6 +316,7 @@
           <div class="switch-row" style="margin-top:10px">
             <label class="switch"><input type="checkbox" id="filterStar" checked><span class="track"></span><span>剔除科创板</span></label>
             <label class="switch"><input type="checkbox" id="filterBJ" checked><span class="track"></span><span>剔除北交所</span></label>
+            <label class="switch"><input type="checkbox" id="filterLimitUp"><span class="track"></span><span>过滤当日涨停</span></label>
           </div>
 
           <div class="form-divider"></div>
@@ -333,6 +341,20 @@
             <div class="field">
               <label>单边成本 <span class="hint">bps</span></label>
               <input type="number" id="btCost" value="15" min="0" max="100">
+            </div>
+          </div>
+          <div class="form-grid">
+            <div class="field">
+              <label>权重方案</label>
+              <select id="btWeighting">
+                <option value="equal">等权</option>
+                <option value="score">因子得分加权</option>
+                <option value="inverse_vol">波动率倒数</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>单票上限 <span class="hint">%，0=不限</span></label>
+              <input type="number" id="btMaxWeight" value="0" min="0" max="100">
             </div>
           </div>
           <div class="field" style="margin-top:12px">

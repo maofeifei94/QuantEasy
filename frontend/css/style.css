@@ -456,6 +456,22 @@ td .cd { font-family: var(--mono); font-size: 11px; color: var(--faint); }
 .bt-form .form-grid { margin-top: 12px; }
 .form-divider { border-top: 1px dashed var(--border); margin: 16px 0 14px; }
 
+/* 策略模板 */
+.tpl-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 14px; }
+.tpl-label { font-size: 10.5px; color: var(--faint); letter-spacing: .5px; margin-right: 2px; }
+.tpl-btn {
+  border: 1px solid var(--border);
+  background: rgba(18, 28, 41, .6);
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all .15s;
+}
+.tpl-btn:hover { color: var(--text); border-color: rgba(61,220,151,.4); background: rgba(61,220,151,.08); }
+
 /* 因子组合构建器 */
 .combo-list { display: flex; flex-direction: column; gap: 5px; }
 .combo-row {
@@ -675,9 +691,9 @@ td .cd { font-family: var(--mono); font-size: 11px; color: var(--faint); }
   .page { padding: 18px; }
   .topbar { padding: 16px 18px 12px; }
 }
-@media (max-width: 760px) {
+@media (max-width: 900px) {
   .factor-layout, .bt-layout { grid-template-columns: 1fr; }
-  .bt-form { position: static; }
+  .bt-form { position: static; max-height: none; }
   .perf-grid { grid-template-columns: repeat(2, 1fr); }
   .grid-3 { grid-template-columns: 1fr; }
   .hero-stats { grid-template-columns: 1fr 1fr; }

@@ -276,7 +276,32 @@ def _apply_filters(data: dict, filters: dict | None) -> np.ndarray:
         if amount.shape[0] >= n:
             roll[n - 1:] = (cs[n:] - cs[:-n]) / n
         valid &= np.nan_to_num(roll, nan=0.0) >= min_amount * 1e8
+
+    if filters.get("exclude_limit_up"):
+        rets = data["returns"]
+        valid &= ~(np.isfinite(rets) & (rets >= 0.095))
     return valid
+
+
+def _rolling_vol(returns: np.ndarray, window: int = 20) -> np.ndarray:
+    """20 日滚动波动率，缺失值用截面中位数填充。"""
+    T, N = returns.shape
+    vol = np.full((T, N), np.nan, dtype=np.float64)
+    for t in range(window - 1, T):
+        w = returns[t - window + 1: t + 1]
+        ok = np.isfinite(w)
+        cnt = ok.sum(axis=0)
+        mean = np.where(ok, w, 0.0).sum(axis=0) / np.maximum(cnt, 1)
+        var = np.where(ok, (w - mean) ** 2, 0.0).sum(axis=0) / np.maximum(cnt, 1)
+        v = np.sqrt(var)
+        vol[t] = np.where(cnt >= 10, v, np.nan)
+    for t in range(T):
+        row = vol[t]
+        if np.isfinite(row).any():
+            vol[t] = np.where(np.isfinite(row), row, np.nanmedian(row))
+        else:
+            vol[t] = 0.02
+    return np.maximum(vol, 1e-3)
 
 
 # --------------------------------------------------------------------------- #
@@ -411,7 +436,7 @@ def _market_benchmark(dates: list[str], start: str, end: str) -> np.ndarray:
 
 
 def _extended_metrics(net: np.ndarray, bench_nav: np.ndarray,
-                      monthly: list[dict]) -> dict:
+                      monthly: list[dict], nav: np.ndarray | None = None) -> dict:
     out: dict[str, float] = {}
     if len(bench_nav) > 1 and len(net) > 1:
         bench_ret = bench_nav[1:] / bench_nav[:-1] - 1.0
@@ -428,6 +453,14 @@ def _extended_metrics(net: np.ndarray, bench_nav: np.ndarray,
         downside_vol = float(np.std(downside, ddof=1) * np.sqrt(252)) if downside.size > 1 else 0.0
         sortino = float(np.mean(a) * np.sqrt(252) / np.std(downside, ddof=1)) \
             if downside.size > 1 and np.std(downside, ddof=1) > 1e-12 else 0.0
+        up_mask = b > 0
+        down_mask = b < 0
+        up_capture = float(np.mean(a[up_mask]) / np.mean(b[up_mask])) \
+            if up_mask.sum() > 2 and abs(np.mean(b[up_mask])) > 1e-12 else 0.0
+        down_capture = float(np.mean(a[down_mask]) / np.mean(b[down_mask])) \
+            if down_mask.sum() > 2 and abs(np.mean(b[down_mask])) > 1e-12 else 0.0
+        var95 = float(np.percentile(a, 5))
+        cvar95 = float(a[a <= var95].mean())
         out.update({
             "alpha": round(alpha, 4),
             "beta": round(beta, 3),
@@ -435,13 +468,47 @@ def _extended_metrics(net: np.ndarray, bench_nav: np.ndarray,
             "information_ratio": round(info_ratio, 3),
             "downside_volatility": round(downside_vol, 4),
             "sortino": round(sortino, 3),
+            "up_capture": round(up_capture, 3),
+            "down_capture": round(down_capture, 3),
+            "var_95": round(var95, 4),
+            "cvar_95": round(cvar95, 4),
         })
+    if nav is not None and len(nav) > 1:
+        peak = nav[0]
+        peak_idx = 0
+        max_days = 0
+        for i, v in enumerate(nav):
+            if v >= peak:
+                peak = v
+                peak_idx = i
+            else:
+                max_days = max(max_days, i - peak_idx)
+        out["max_drawdown_days"] = int(max_days)
     if monthly:
         values = np.array([m["return"] for m in monthly], dtype=np.float64)
         out["monthly_win_rate"] = round(float(np.mean(values > 0)), 3)
         out["best_month"] = round(float(values.max()), 4)
         out["worst_month"] = round(float(values.min()), 4)
     return out
+
+
+def _industry_exposure(weights: np.ndarray, rebalance: np.ndarray,
+                       codes: list[str], industries: dict[str, str]) -> list[dict]:
+    idxs = [i for i in range(len(rebalance))
+            if rebalance[i] and np.abs(weights[i]).sum() > 1e-9]
+    if not idxs:
+        return []
+    groups: dict[str, list[int]] = {}
+    for j, code in enumerate(codes):
+        groups.setdefault(industries.get(code, "未分类"), []).append(j)
+    out = []
+    for name, members in groups.items():
+        last = float(np.sum(weights[idxs[-1], members]))
+        avg = float(np.mean([np.sum(weights[i, members]) for i in idxs]))
+        if abs(last) < 1e-6 and abs(avg) < 1e-6:
+            continue
+        out.append({"industry": name, "last": round(last, 4), "avg": round(avg, 4)})
+    return sorted(out, key=lambda x: -abs(x["last"]))
 
 
 def run_backtest(payload: dict) -> dict:
@@ -457,11 +524,17 @@ def run_backtest(payload: dict) -> dict:
     commission = float(payload.get("commission_bps") or 15) / 10000.0
     long_short = bool(payload.get("long_short") or False)
     benchmark_type = payload.get("benchmark") or "universe"
+    weighting = payload.get("weighting") or "equal"
+    if weighting not in ("equal", "score", "inverse_vol"):
+        weighting = "equal"
+    max_weight = float(payload.get("max_weight") or 0) / 100.0
+    vol = _rolling_vol(data["returns"]) if weighting == "inverse_vol" else None
 
     sim = bt_engine.run_backtest(
         score=score, close=close, valid=valid, rebalance=rebalance,
         top_frac=top_frac, top_n=top_n, long_short=long_short,
-        commission=commission,
+        commission=commission, weighting=weighting,
+        max_weight=max_weight, vol=vol,
     )
     bench = sim["benchmark"]
     if benchmark_type == "market":
@@ -480,7 +553,9 @@ def run_backtest(payload: dict) -> dict:
         "benchmark_annual_return": round(bench_annual, 4),
         "excess_annual_return": round(metrics["annual_return"] - bench_annual, 4),
     })
-    metrics.update(_extended_metrics(np.asarray(sim["returns"]), np.asarray(bench), monthly))
+    metrics.update(_extended_metrics(
+        np.asarray(sim["returns"]), np.asarray(bench), monthly, np.asarray(sim["nav"])
+    ))
     metrics = {k: round(v, 4) for k, v in metrics.items()}
     metrics["trade_days"] = int(metrics["trade_days"])
 
@@ -508,6 +583,7 @@ def run_backtest(payload: dict) -> dict:
         "metrics": metrics,
         "monthly": monthly,
         "holdings": _holdings(dates, w, rebalance, data["names"], codes),
+        "industry_exposure": _industry_exposure(w, rebalance, codes, data["industries"]),
         "factor": {
             "label": factor["label"],
             "expression": factor["expression"],
@@ -537,6 +613,8 @@ def run_backtest(payload: dict) -> dict:
             "commission_bps": commission * 10000,
             "long_short": long_short,
             "benchmark": benchmark_type,
+            "weighting": weighting,
+            "max_weight": max_weight * 100,
             "filters": payload.get("filters") or {},
             "preprocess": factor["preprocess"],
             "factors": factor["factors"],
@@ -564,6 +642,11 @@ def optimize_backtest(payload: dict) -> dict:
         raise ValueError("参数扫描范围不能为空")
     commission = float(payload.get("commission_bps") or 15) / 10000.0
     long_short = bool(payload.get("long_short") or False)
+    weighting = payload.get("weighting") or "equal"
+    if weighting not in ("equal", "score", "inverse_vol"):
+        weighting = "equal"
+    max_weight = float(payload.get("max_weight") or 0) / 100.0
+    vol = _rolling_vol(data["returns"]) if weighting == "inverse_vol" else None
 
     cells = []
     for freq in rebs:
@@ -572,7 +655,8 @@ def optimize_backtest(payload: dict) -> dict:
             sim = bt_engine.run_backtest(
                 score=score, close=data["close"], valid=valid, rebalance=rebalance,
                 top_frac=0.2, top_n=top_n, long_short=long_short,
-                commission=commission,
+                commission=commission, weighting=weighting,
+                max_weight=max_weight, vol=vol,
             )
             m = sim["metrics"]
             cells.append({

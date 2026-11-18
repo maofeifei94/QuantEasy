@@ -140,12 +140,50 @@ def analyze(score: np.ndarray, close: np.ndarray, valid: np.ndarray,
         "ic_by_year": ic_by_year,
         "ic_decay": ic_decay,
         "quantile_returns": quantile_returns,
+        "quantile_nav": quantile_nav(score, close, valid, dates),
         "sample_series": sample,
         "stats": {
             "coverage": round(coverage, 3),
             "mean": round(float(finite_score.mean()), 5) if finite_score.size else 0.0,
             "std": round(float(finite_score.std()), 5) if finite_score.size else 0.0,
         },
+    }
+
+
+def quantile_nav(score: np.ndarray, close: np.ndarray, valid: np.ndarray,
+                 dates: list[str], n_groups: int = 5) -> dict:
+    """因子分层组合净值：每日按因子值分组等权持有，统计次日收益。"""
+    T, N = score.shape
+    if T < 2:
+        return {"dates": [], "groups": []}
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rets = close[1:] / close[:-1] - 1.0
+    group_rets = np.zeros((n_groups, T - 1), dtype=np.float64)
+    for t in range(T - 1):
+        mask = np.isfinite(score[t]) & valid[t] & np.isfinite(rets[t])
+        if mask.sum() < 10:
+            continue
+        s = score[t][mask]
+        r = rets[t][mask]
+        ranks = _rank(s)
+        q = np.minimum((ranks / len(ranks)) * n_groups, n_groups - 1).astype(int)
+        for g in range(n_groups):
+            sel = r[q == g]
+            if sel.size:
+                group_rets[g, t] = sel.mean()
+
+    navs = np.cumprod(1.0 + group_rets, axis=1)
+    navs = np.concatenate([np.ones((n_groups, 1)), navs], axis=1)
+    step = max(1, T // 320)
+    idx = list(range(0, T, step))
+    if T - 1 not in idx:
+        idx.append(T - 1)
+    return {
+        "dates": [dates[i] for i in idx],
+        "groups": [
+            {"group": f"Q{g + 1}", "nav": [round(float(navs[g, i]), 4) for i in idx]}
+            for g in range(n_groups)
+        ],
     }
 
 
