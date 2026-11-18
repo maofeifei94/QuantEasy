@@ -1071,7 +1071,7 @@
   }
 
   function renderSignal(res) {
-    const wLabel = { equal: "等权", score: "得分加权", inverse_vol: "波动率倒数" }[res.config.weighting] || "等权";
+    const wLabel = { equal: "等权", score: "得分加权", inverse_vol: "波动率倒数", risk_parity: "风险平价" }[res.config.weighting] || "等权";
     const chips = (res.factor.factors || []).map((f) =>
       `<span class="chip blue">${esc(f.label)} ${(f.weight * 100).toFixed(0)}%</span>`).join("");
     openModal(`
@@ -1238,6 +1238,61 @@
     toast("配置已载入");
   }
 
+  /* ------------------------------ 批量评测 ------------------------------ */
+  async function openBatch() {
+    openModal(`
+      <div class="modal-head"><div><h3>批量因子评测</h3><div class="panel-sub" style="margin-top:3px">用当前回测配置评测全部内置因子</div></div>
+        <button class="icon-btn" data-close>✕</button></div>
+      <div class="empty" style="border:none;padding:60px 20px">
+        <span class="spinner" style="width:24px;height:24px;margin:0 auto 14px;display:block"></span>
+        <p>正在批量回测内置因子…</p>
+        <div class="sub">约 14 个因子，复用 JAX 编译缓存</div>
+      </div>`, true);
+    try {
+      const res = await api("/api/backtest/batch", { method: "POST", body: buildCommonConfig() });
+      renderBatch(res);
+    } catch (e) {
+      closeModal();
+      toast(e.message, true);
+    }
+  }
+
+  function renderBatch(res) {
+    const c = res.config;
+    openModal(`
+      <div class="modal-head">
+        <div><h3>批量因子评测</h3>
+          <div class="panel-sub" style="margin-top:3px">${c.stocks} 只股票 · ${c.start} → ${c.end} · ${c.rebalance_days} 日调仓 · 按夏普排序</div>
+        </div>
+        <button class="icon-btn" data-close>✕</button>
+      </div>
+      <div class="table-wrap" style="max-height:460px">
+        <table>
+          <thead><tr><th>因子</th><th>分类</th><th style="text-align:right">年化</th><th style="text-align:right">夏普</th><th style="text-align:right">回撤</th><th style="text-align:right">IC</th><th style="text-align:right">ICIR</th><th></th></tr></thead>
+          <tbody>
+            ${res.items.map((it, i) => `<tr style="cursor:default">
+              <td>${esc(it.label)}</td>
+              <td><span class="chip">${esc(it.category)}</span></td>
+              <td style="text-align:right" class="num-mono ${colorClass(it.annual_return)}">${fmtPct(it.annual_return)}</td>
+              <td style="text-align:right" class="num-mono">${fmtNum(it.sharpe)}</td>
+              <td style="text-align:right" class="num-mono">${fmtPct(it.max_drawdown)}</td>
+              <td style="text-align:right" class="num-mono">${fmtNum(it.ic, 3)}</td>
+              <td style="text-align:right" class="num-mono">${fmtNum(it.icir, 2)}</td>
+              <td><button class="btn sm" data-batch-use="${i}">选用</button></td>
+            </tr>`).join("")}
+          </tbody>
+        </table>
+      </div>
+      <div class="modal-foot"><span class="panel-sub">选用后替换当前因子组合</span><button class="btn ghost" data-close>关闭</button></div>`, true);
+    $$("#modalBox [data-batch-use]").forEach((btn) => btn.addEventListener("click", () => {
+      const item = res.items[Number(btn.dataset.batchUse)];
+      state.btFactors = [{ id: String(item.id), weight: 1 }];
+      renderCombo();
+      closeModal();
+      toast(`已选用因子「${item.label}」`);
+    }));
+  }
+
   async function runBacktest() {
     const btn = $("#runBacktestBtn");
     if (!state.btFactors.length) { toast("请至少添加一个因子", true); return; }
@@ -1315,7 +1370,7 @@
       : (cfg.benchmark || "").startsWith("index:")
         ? ((state.indices.find((i) => "index:" + i.code === cfg.benchmark) || {}).name || "指数基准")
         : "股票池等权");
-    const weightLabel = { equal: "等权", score: "得分加权", inverse_vol: "波动率倒数" }[cfg.weighting] || "等权";
+    const weightLabel = { equal: "等权", score: "得分加权", inverse_vol: "波动率倒数", risk_parity: "风险平价" }[cfg.weighting] || "等权";
 
     $("#btResults").innerHTML = `
       <div class="panel">
@@ -2042,6 +2097,7 @@ th,td{border-bottom:1px solid #e8eef6;padding:6px 8px;text-align:left}th{color:#
     $("#saveConfigBtn").addEventListener("click", saveCurrentConfig);
     $("#loadConfigBtn").addEventListener("click", openLoadConfig);
     $("#runBacktestBtn").addEventListener("click", runBacktest);
+    $("#batchBtn").addEventListener("click", openBatch);
     $("#optimizeBtn").addEventListener("click", runParamScan);
     $("#refreshHistory").addEventListener("click", loadHistory);
     $("#strategyCombineBtn").addEventListener("click", openStrategyCombine);

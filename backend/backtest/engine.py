@@ -75,7 +75,7 @@ def _target_weights(
     return target
 
 
-@partial(jax.jit, static_argnames=("top_n", "long_short", "weighting", "max_weight", "constraints"))
+@partial(jax.jit, static_argnames=("top_n", "long_short", "weighting", "max_weight", "constraints", "use_override"))
 def _simulate(
     score: jnp.ndarray,
     close: jnp.ndarray,
@@ -94,12 +94,17 @@ def _simulate(
     buy_block: jnp.ndarray,
     sell_block: jnp.ndarray,
     constraints: bool,
+    weight_override: jnp.ndarray,
+    use_override: bool,
 ):
     T, N = score.shape
-    target = _target_weights(
-        score, valid, rebalance, top_frac, top_n, long_short,
-        weighting, max_weight, vol, timing,
-    )
+    if use_override:
+        target = jnp.where(rebalance[:, None], weight_override * timing[:, None], 0.0)
+    else:
+        target = _target_weights(
+            score, valid, rebalance, top_frac, top_n, long_short,
+            weighting, max_weight, vol, timing,
+        )
 
     def fill(w_prev, inputs):
         tgt, rb, bb, sb = inputs
@@ -187,6 +192,8 @@ def run_backtest(
     buy_block: np.ndarray | None = None,
     sell_block: np.ndarray | None = None,
     constraints: bool = False,
+    weight_override: np.ndarray | None = None,
+    use_override: bool = False,
 ) -> dict[str, Any]:
     score_j = jnp.asarray(score, dtype=jnp.float64)
     close_j = jnp.asarray(close, dtype=jnp.float64)
@@ -196,13 +203,16 @@ def run_backtest(
     timing_j = jnp.asarray(timing if timing is not None else np.ones(close.shape[0]), dtype=jnp.float64)
     buy_j = jnp.asarray(buy_block if buy_block is not None else np.zeros(close.shape, dtype=bool), dtype=bool)
     sell_j = jnp.asarray(sell_block if sell_block is not None else np.zeros(close.shape, dtype=bool), dtype=bool)
+    override_j = jnp.asarray(
+        weight_override if weight_override is not None else np.zeros(close.shape), dtype=jnp.float64
+    )
 
     nav, bench, net, drawdown, dw, W = _simulate(
         score_j, close_j, valid_j, reb_j,
         float(top_frac), int(top_n), bool(long_short), float(commission),
         float(stamp_duty), float(slippage),
         str(weighting), float(max_weight), vol_j, timing_j,
-        buy_j, sell_j, bool(constraints),
+        buy_j, sell_j, bool(constraints), override_j, bool(use_override),
     )
     m = _metrics(net, nav, dw)
 

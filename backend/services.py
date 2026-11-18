@@ -305,6 +305,55 @@ def _apply_filters(data: dict, filters: dict | None) -> np.ndarray:
     return valid
 
 
+def _erc_weights(cov: np.ndarray, iters: int = 60) -> np.ndarray:
+    """等风险贡献（Risk Parity）权重，迭代求解。"""
+    n = cov.shape[0]
+    if n == 1:
+        return np.array([1.0])
+    w = np.ones(n) / n
+    for _ in range(iters):
+        port = float(w @ cov @ w)
+        if port <= 1e-16:
+            break
+        mrc = (cov @ w) / port
+        rc = w * mrc
+        target = 1.0 / n
+        w = w * np.sqrt(np.maximum(target, 1e-12) / np.maximum(rc, 1e-12))
+        w = np.maximum(w, 1e-8)
+        w = w / w.sum()
+    return w
+
+
+def _risk_parity_targets(score: np.ndarray, valid: np.ndarray, returns: np.ndarray,
+                         rebalance: np.ndarray, top_n: int, top_frac: float,
+                         max_weight: float, window: int = 60) -> np.ndarray:
+    """在每次调仓日按协方差计算等风险贡献权重。"""
+    T, N = score.shape
+    target = np.zeros((T, N), dtype=np.float64)
+    rets = np.nan_to_num(returns, nan=0.0, posinf=0.0, neginf=0.0)
+    for t in np.where(rebalance)[0]:
+        row = np.where(valid[t] & np.isfinite(score[t]), score[t], -np.inf)
+        n_valid = int(np.isfinite(row).sum())
+        if n_valid < 2:
+            continue
+        k = min(top_n, n_valid) if top_n > 0 else max(1, int(round(top_frac * n_valid)))
+        sel = np.argsort(-row)[:k]
+        start = max(0, t - window)
+        sub = rets[start:t][:, sel]
+        if sub.shape[0] >= 20 and len(sel) >= 2:
+            cov = np.atleast_2d(np.cov(sub, rowvar=False))
+            cov = 0.7 * cov + 0.3 * np.diag(np.diag(cov))
+            w = _erc_weights(cov)
+        else:
+            w = np.ones(len(sel)) / len(sel)
+        if max_weight > 0:
+            cap = max(max_weight, 1.0 / len(sel))
+            w = np.minimum(w, cap)
+            w = w / max(w.sum(), 1e-12)
+        target[t, sel] = w
+    return target
+
+
 def _rolling_vol(returns: np.ndarray, window: int = 20) -> np.ndarray:
     """20 日滚动波动率，缺失值用截面中位数填充。"""
     T, N = returns.shape
@@ -869,10 +918,17 @@ def run_backtest(payload: dict) -> dict:
     long_short = bool(payload.get("long_short") or False)
     benchmark_type = payload.get("benchmark") or "universe"
     weighting = payload.get("weighting") or "equal"
-    if weighting not in ("equal", "score", "inverse_vol"):
+    if weighting not in ("equal", "score", "inverse_vol", "risk_parity"):
         weighting = "equal"
     max_weight = float(payload.get("max_weight") or 0) / 100.0
     vol = _rolling_vol(data["returns"]) if weighting == "inverse_vol" else None
+    weight_override = None
+    use_override = False
+    if weighting == "risk_parity" and not long_short:
+        weight_override = _risk_parity_targets(
+            score, valid, data["returns"], rebalance, top_n, top_frac, max_weight
+        )
+        use_override = True
     timing_window = int(payload.get("timing_window") or 0) if payload.get("market_timing") else 0
     timing = _market_timing(dates, dates[0], dates[-1], timing_window) if timing_window > 1 else None
     trade_constraints = bool(payload.get("trade_constraints"))
@@ -890,6 +946,7 @@ def run_backtest(payload: dict) -> dict:
         weighting=weighting,
         max_weight=max_weight, vol=vol, timing=timing,
         buy_block=buy_block, sell_block=sell_block, constraints=trade_constraints,
+        weight_override=weight_override, use_override=use_override,
     )
     bench = sim["benchmark"]
     benchmark_name = "股票池等权"
@@ -1053,7 +1110,7 @@ def optimize_backtest(payload: dict) -> dict:
     slippage = slippage_bps / 10000.0
     long_short = bool(payload.get("long_short") or False)
     weighting = payload.get("weighting") or "equal"
-    if weighting not in ("equal", "score", "inverse_vol"):
+    if weighting not in ("equal", "score", "inverse_vol", "risk_parity"):
         weighting = "equal"
     max_weight = float(payload.get("max_weight") or 0) / 100.0
     vol = _rolling_vol(data["returns"]) if weighting == "inverse_vol" else None
@@ -1072,6 +1129,13 @@ def optimize_backtest(payload: dict) -> dict:
     for freq in rebs:
         rebalance, _ = _rebalance_mask(score, valid, freq)
         for top_n in tops:
+            override = None
+            use_override = False
+            if weighting == "risk_parity" and not long_short:
+                override = _risk_parity_targets(
+                    score, valid, data["returns"], rebalance, top_n, 0.2, max_weight
+                )
+                use_override = True
             sim = bt_engine.run_backtest(
                 score=score, close=data["close"], valid=valid, rebalance=rebalance,
                 top_frac=0.2, top_n=top_n, long_short=long_short,
@@ -1079,6 +1143,7 @@ def optimize_backtest(payload: dict) -> dict:
                 weighting=weighting,
                 max_weight=max_weight, vol=vol, timing=timing,
                 buy_block=buy_block, sell_block=sell_block, constraints=trade_constraints,
+                weight_override=override, use_override=use_override,
             )
             m = sim["metrics"]
             cells.append({
@@ -1134,16 +1199,25 @@ def latest_signal(payload: dict) -> dict:
     selected = order[:k]
 
     weighting = payload.get("weighting") or "equal"
-    if weighting not in ("equal", "score", "inverse_vol"):
+    if weighting not in ("equal", "score", "inverse_vol", "risk_parity"):
         weighting = "equal"
-    if weighting == "score":
-        raw = (k - np.arange(k)).astype(np.float64)
-    elif weighting == "inverse_vol":
-        vol = _rolling_vol(data["returns"])[t, selected]
-        raw = 1.0 / np.maximum(vol, 1e-4)
+    if weighting == "risk_parity":
+        sub = np.nan_to_num(data["returns"][max(0, t - 60):t][:, selected], nan=0.0)
+        if sub.shape[0] >= 20 and k >= 2:
+            cov = np.atleast_2d(np.cov(sub, rowvar=False))
+            cov = 0.7 * cov + 0.3 * np.diag(np.diag(cov))
+            weights = _erc_weights(cov)
+        else:
+            weights = np.ones(k) / k
     else:
-        raw = np.ones(k, dtype=np.float64)
-    weights = raw / raw.sum()
+        if weighting == "score":
+            raw = (k - np.arange(k)).astype(np.float64)
+        elif weighting == "inverse_vol":
+            vol = _rolling_vol(data["returns"])[t, selected]
+            raw = 1.0 / np.maximum(vol, 1e-4)
+        else:
+            raw = np.ones(k, dtype=np.float64)
+        weights = raw / raw.sum()
     max_weight = float(payload.get("max_weight") or 0) / 100.0
     if max_weight > 0:
         cap = max(max_weight, 1.0 / k)
@@ -1176,6 +1250,94 @@ def latest_signal(payload: dict) -> dict:
             "top_n": k,
             "max_weight": max_weight * 100,
             "benchmark": payload.get("benchmark") or "universe",
+        },
+    }
+
+
+def batch_backtest(payload: dict) -> dict:
+    """用同一套配置批量回测全部内置因子，输出排行榜。"""
+    codes = payload.get("codes") or None
+    data = panel.build_panel(codes, payload.get("start") or None, payload.get("end") or None)
+    valid = _apply_filters(data, payload.get("filters"))
+    options = payload.get("preprocess") or {}
+    freq = max(1, min(int(payload.get("rebalance_days") or 10), 120))
+    top_n = int(payload.get("top_n") or 0)
+    top_frac = float(payload.get("top_pct") or 0.2)
+    commission_bps = float(payload.get("commission_bps") or 15)
+    stamp_duty_bps = float(payload.get("stamp_duty_bps") or 0)
+    slippage_bps = float(payload.get("slippage_bps") or 0)
+    if "stamp_duty_bps" not in payload and "slippage_bps" not in payload:
+        stamp_duty_bps = slippage_bps = 0.0
+    commission = commission_bps / 10000.0
+    stamp_duty = stamp_duty_bps / 10000.0
+    slippage = slippage_bps / 10000.0
+    long_short = bool(payload.get("long_short") or False)
+    weighting = payload.get("weighting") or "equal"
+    if weighting not in ("equal", "score", "inverse_vol", "risk_parity"):
+        weighting = "equal"
+    max_weight = float(payload.get("max_weight") or 0) / 100.0
+    vol = _rolling_vol(data["returns"]) if weighting == "inverse_vol" else None
+    timing_window = int(payload.get("timing_window") or 0) if payload.get("market_timing") else 0
+    timing = _market_timing(data["dates"], data["dates"][0], data["dates"][-1],
+                            timing_window) if timing_window > 1 else None
+    trade_constraints = bool(payload.get("trade_constraints"))
+    buy_block = sell_block = None
+    if trade_constraints:
+        rets = data["returns"]
+        volume = data["volume"]
+        buy_block = (rets >= 0.095) | (volume <= 0)
+        sell_block = (rets <= -0.095) | (volume <= 0)
+
+    items = []
+    for meta in builtin.all_factors():
+        try:
+            raw = compute(meta["expression"], data)
+            score = np.asarray(pre_mod.apply_preprocess(
+                raw * meta["direction"], data, options, force_standardize=False
+            ))
+            rebalance, warmup = _rebalance_mask(score, valid, freq)
+            override = None
+            use_override = False
+            if weighting == "risk_parity" and not long_short:
+                override = _risk_parity_targets(
+                    score, valid, data["returns"], rebalance, top_n, top_frac, max_weight
+                )
+                use_override = True
+            sim = bt_engine.run_backtest(
+                score=score, close=data["close"], valid=valid, rebalance=rebalance,
+                top_frac=top_frac, top_n=top_n, long_short=long_short,
+                commission=commission, stamp_duty=stamp_duty, slippage=slippage,
+                weighting=weighting, max_weight=max_weight, vol=vol, timing=timing,
+                buy_block=buy_block, sell_block=sell_block, constraints=trade_constraints,
+                weight_override=override, use_override=use_override,
+            )
+            stats = analysis.quick_ic(score, data["close"], valid, 5)
+        except Exception:
+            continue
+        m = sim["metrics"]
+        items.append({
+            "id": meta["id"],
+            "label": meta["label"],
+            "category": meta["category"],
+            "annual_return": round(m["annual_return"], 4),
+            "total_return": round(m["total_return"], 4),
+            "sharpe": round(m["sharpe"], 3),
+            "max_drawdown": round(m["max_drawdown"], 4),
+            "annual_turnover": round(m["annual_turnover"], 2),
+            "ic": stats["mean"],
+            "icir": stats["ir"],
+        })
+    items.sort(key=lambda x: -x["sharpe"])
+    return {
+        "items": items,
+        "config": {
+            "start": data["dates"][0],
+            "end": data["dates"][-1],
+            "stocks": len(data["codes"]),
+            "rebalance_days": freq,
+            "top_n": top_n,
+            "top_pct": top_frac,
+            "weighting": weighting,
         },
     }
 
