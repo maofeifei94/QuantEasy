@@ -1676,7 +1676,13 @@ def screen_stocks(payload: dict) -> dict:
             value = float(c.get("value"))
         except (TypeError, ValueError):
             raise ValueError(f"条件「{spec['label']}」的阈值无效")
-        specs.append({"spec": spec, "raw": raw, "mode": mode, "value": value, "scope": scope})
+        try:
+            weight = float(c.get("weight", 1) or 0)
+        except (TypeError, ValueError):
+            weight = 1.0
+        weight = max(-5.0, min(weight, 5.0))
+        specs.append({"spec": spec, "raw": raw, "mode": mode, "value": value,
+                      "scope": scope, "weight": weight})
 
     base_counts = (np.isfinite(specs[0]["raw"]) & valid).sum(axis=1)
     date = payload.get("date")
@@ -1728,12 +1734,13 @@ def screen_stocks(payload: dict) -> dict:
         mu, sd = float(np.mean(vals)), float(np.std(vals))
         z = np.where(base, (row - mu) / max(sd, 1e-9), np.nan)
         prefer_high = mode in ("rank_top", "gte")
-        zs.append(z if prefer_high else -np.asarray(z))
+        zs.append((z if prefer_high else -np.asarray(z)) * item["weight"])
         rows.append(row)
         cond_detail.append({
             "label": item["spec"]["label"],
             "mode": mode,
             "value": value,
+            "weight": item["weight"],
             "passed": int(passed.sum()),
         })
         passes.append(passed)
@@ -1749,7 +1756,20 @@ def screen_stocks(payload: dict) -> dict:
     close = data["close"]
     prev_close = close[t - 1] if t > 0 else np.full(N, np.nan)
     score = np.nansum(np.stack(zs), axis=0) if idxs.size else np.zeros(N)
+    sort_by = str(payload.get("sort_by") or "score")
     order = idxs[np.argsort(-score[idxs])] if idxs.size else np.array([], dtype=int)
+    if sort_by.startswith("c") and sort_by[1:].isdigit():
+        k = int(sort_by[1:])
+        if 0 <= k < len(rows) and idxs.size:
+            reverse = specs[k]["mode"] in ("rank_bottom", "lte")
+            if reverse:
+                key_vals = np.nan_to_num(rows[k][idxs], nan=np.inf)
+                order = idxs[np.argsort(key_vals)]
+            else:
+                key_vals = np.nan_to_num(rows[k][idxs], nan=-np.inf)
+                order = idxs[np.argsort(-key_vals)]
+        else:
+            sort_by = "score"
     limit = max(1, min(int(payload.get("limit") or 50), 200))
 
     items = []
@@ -1770,6 +1790,7 @@ def screen_stocks(payload: dict) -> dict:
     return {
         "as_of": data["dates"][t],
         "logic": logic,
+        "sort_by": sort_by,
         "count": int(mask.sum()),
         "returned": len(items),
         "universe_size": int(valid_t.sum()),

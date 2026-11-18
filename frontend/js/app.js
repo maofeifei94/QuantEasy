@@ -2276,7 +2276,7 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
   function initScreener() {
     if (!state.screenerConds.length) {
       const first = state.factors[0];
-      state.screenerConds = [{ factorId: first ? first.id : "", mode: "rank_top", value: 20 }];
+      state.screenerConds = [{ factorId: first ? first.id : "", mode: "rank_top", value: 20, weight: 1 }];
     }
     renderScreenerConds();
   }
@@ -2299,11 +2299,24 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
         </select>
         <input type="number" class="scr-value" data-i="${i}" value="${c.value}" step="1" style="width:92px">
         <span class="hint" data-unit="${i}">${c.mode.startsWith("rank") ? "%" : "值"}</span>
+        <input type="number" class="scr-weight" data-i="${i}" value="${c.weight == null ? 1 : c.weight}" step="0.5" min="-5" max="5" title="综合分权重（仅影响排序）" style="width:74px">
+        <span class="hint">权重</span>
         <button class="icon-btn" data-del="${i}" title="删除条件">✕</button>
       </div>`).join("");
 
+    const sortSel = $("#scrSort");
+    if (sortSel) {
+      const cur = sortSel.value || "score";
+      sortSel.innerHTML = `<option value="score">综合分</option>` + state.screenerConds.map((c, i) => {
+        const f = findFactorById(c.factorId);
+        return `<option value="c${i}">${esc(f ? (f.label || f.name) : c.factorId)}</option>`;
+      }).join("");
+      if (Array.from(sortSel.options).some((o) => o.value === cur)) sortSel.value = cur;
+    }
+
     $$("#scrConds .scr-factor").forEach((el) => el.addEventListener("change", () => {
       state.screenerConds[+el.dataset.i].factorId = el.value;
+      renderScreenerConds();
     }));
     $$("#scrConds .scr-mode").forEach((el) => el.addEventListener("change", () => {
       const i = +el.dataset.i;
@@ -2316,6 +2329,9 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
     }));
     $$("#scrConds .scr-value").forEach((el) => el.addEventListener("input", () => {
       state.screenerConds[+el.dataset.i].value = Number(el.value) || 0;
+    }));
+    $$("#scrConds .scr-weight").forEach((el) => el.addEventListener("input", () => {
+      state.screenerConds[+el.dataset.i].weight = Number(el.value) || 0;
     }));
     $$("#scrConds [data-del]").forEach((el) => el.addEventListener("click", () => {
       if (state.screenerConds.length <= 1) { toast("至少保留一个条件", true); return; }
@@ -2338,9 +2354,11 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
           min_amount: (Number($("#scrAmount").value) || 0) * 10000,
         },
         conditions: state.screenerConds.map((c) => ({
-          factor_id: c.factorId, mode: c.mode, value: c.value, scope: c.scope || "all",
+          factor_id: c.factorId, mode: c.mode, value: c.value,
+          scope: c.scope || "all", weight: c.weight == null ? 1 : c.weight,
         })),
         logic: $("#scrLogic").value,
+        sort_by: $("#scrSort").value || "score",
       };
       const res = await api("/api/screener", { method: "POST", body: payload });
       state.screenerResult = res;
@@ -2429,6 +2447,7 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
       },
       limit: Number($("#scrLimit").value) || 50,
       logic: $("#scrLogic").value,
+      sortBy: $("#scrSort").value || "score",
     });
     localStorage.setItem(SCHEME_KEY, JSON.stringify(schemes.slice(0, 30)));
     toast("选股方案已保存");
@@ -2450,7 +2469,7 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
     $$("#modalBox [data-scheme]").forEach((btn) => btn.addEventListener("click", () => {
       const s = schemes[+btn.dataset.scheme];
       state.screenerConds = (s.conditions || []).map((c) => ({ ...c }));
-      if (!state.screenerConds.length) state.screenerConds = [{ factorId: state.factors[0]?.id || "", mode: "rank_top", value: 20 }];
+      if (!state.screenerConds.length) state.screenerConds = [{ factorId: state.factors[0]?.id || "", mode: "rank_top", value: 20, weight: 1 }];
       const f = s.filters || {};
       $("#scrStar").checked = f.star !== false;
       $("#scrBJ").checked = f.bj !== false;
@@ -2458,6 +2477,7 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
       $("#scrLimit").value = s.limit || 50;
       $("#scrLogic").value = s.logic || "and";
       renderScreenerConds();
+      if (s.sortBy) $("#scrSort").value = s.sortBy;
       closeModal();
       toast(`已载入方案「${s.name}」`);
     }));
@@ -2763,7 +2783,7 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
     $("#scrRun").addEventListener("click", runScreener);
     $("#scrAdd").addEventListener("click", () => {
       if (state.screenerConds.length >= 6) { toast("最多支持 6 个条件", true); return; }
-      state.screenerConds.push({ factorId: state.factors[0]?.id || "", mode: "rank_top", value: 20 });
+      state.screenerConds.push({ factorId: state.factors[0]?.id || "", mode: "rank_top", value: 20, weight: 1 });
       renderScreenerConds();
     });
     $("#scrExport").addEventListener("click", exportScreenerCsv);
