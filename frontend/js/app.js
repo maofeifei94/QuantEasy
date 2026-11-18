@@ -524,6 +524,7 @@
       const payload = {
         factor_id: f.id,
         horizon: Number($("#previewHorizon").value),
+        quantiles: Number($("#previewGroups").value),
       };
       if (state.status && state.status.start_date) {
         payload.start = state.status.start_date;
@@ -629,8 +630,9 @@
       height: 200, colorsByValue: true, yFmt: (v) => v.toFixed(2), includeZero: true,
     });
 
+    const nGroups = res.n_groups || 5;
     const qBlock = document.createElement("div");
-    qBlock.innerHTML = `<div style="margin-top:18px"><div class="chart-title-row"><div><div class="panel-title" style="font-size:13px">分位组合收益</div><div class="panel-sub">按因子值五等分，未来 ${res.horizon} 日平均收益</div></div></div><div class="chart-wrap"><canvas></canvas></div></div>`;
+    qBlock.innerHTML = `<div style="margin-top:18px"><div class="chart-title-row"><div><div class="panel-title" style="font-size:13px">分位组合收益</div><div class="panel-sub">按因子值分 ${nGroups} 组，未来 ${res.horizon} 日平均收益</div></div></div><div class="chart-wrap"><canvas></canvas></div></div>`;
     box.querySelector("#quantileBlock").appendChild(qBlock);
     Charts.bar(qBlock.querySelector("canvas"), {
       labels: res.quantile_returns.map((d) => d.group),
@@ -641,18 +643,18 @@
     const qnav = res.quantile_nav;
     if (qnav && qnav.groups && qnav.groups.length) {
       const qnavBlock = document.createElement("div");
-      qnavBlock.innerHTML = chartBlock("分层组合净值", "按因子值五等分，每日调仓等权持有 · 起点归一");
+      qnavBlock.innerHTML = chartBlock("分层组合净值", `按因子值分 ${nGroups} 组，每日调仓等权持有 · 起点归一`);
       box.querySelector("#qnavBlock").appendChild(qnavBlock);
       const palette = ["#6aa9ff", "#59c3c3", "#3ddc97", "#f5b56b", "#ff6b7a"];
       const series = qnav.groups.map((g, i) => ({
         name: g.group,
         color: palette[i % palette.length],
         data: g.nav.map((v) => (v - 1) * 100),
-        width: g.group === "Q5" ? 2.1 : 1.5,
+        width: g.group === "Q" + nGroups ? 2.1 : 1.5,
       }));
       if (qnav.long_short && qnav.long_short.length) {
         series.push({
-          name: "Q5-Q1 多空",
+          name: `Q${nGroups}-Q1 多空`,
           color: "#e8eef7",
           data: qnav.long_short.map((v) => (v - 1) * 100),
           dash: [4, 3],

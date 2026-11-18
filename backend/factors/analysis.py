@@ -69,7 +69,9 @@ def quick_ic(score: np.ndarray, close: np.ndarray, valid: np.ndarray,
 
 def analyze(score: np.ndarray, close: np.ndarray, valid: np.ndarray,
             dates: list[str], codes: list[str], names: dict[str, str],
-            horizon: int = 5, industries: dict[str, str] | None = None) -> dict:
+            horizon: int = 5, industries: dict[str, str] | None = None,
+            n_groups: int = 5) -> dict:
+    n_groups = max(2, min(int(n_groups or 5), 10))
     fwd = _forward_returns(close, valid, horizon)
     ic_series = daily_ic(score, fwd)
     finite_ic = ic_series[np.isfinite(ic_series)]
@@ -89,8 +91,8 @@ def analyze(score: np.ndarray, close: np.ndarray, valid: np.ndarray,
             "ic": round(float(s.mean()), 4) if s.size else 0.0,
         })
 
-    # 分位组合：每个截面按因子值分 5 组，统计未来 horizon 日平均收益
-    groups = [[] for _ in range(5)]
+    # 分位组合：每个截面按因子值分 n_groups 组，统计未来 horizon 日平均收益
+    groups = [[] for _ in range(n_groups)]
     for t in range(score.shape[0]):
         s, f = score[t], fwd[t]
         mask = np.isfinite(s) & np.isfinite(f)
@@ -98,13 +100,13 @@ def analyze(score: np.ndarray, close: np.ndarray, valid: np.ndarray,
             continue
         s, f = s[mask], f[mask]
         ranks = _rank(s)
-        q = np.minimum((ranks / len(ranks)) * 5, 4).astype(int)
-        for gi in range(5):
+        q = np.minimum((ranks / len(ranks)) * n_groups, n_groups - 1).astype(int)
+        for gi in range(n_groups):
             sel = f[q == gi]
             if sel.size:
                 groups[gi].append(sel.mean())
     quantile_returns = []
-    for gi in range(5):
+    for gi in range(n_groups):
         arr = np.asarray(groups[gi])
         mean_ret = float(arr.mean()) if arr.size else 0.0
         quantile_returns.append({
@@ -198,7 +200,8 @@ def analyze(score: np.ndarray, close: np.ndarray, valid: np.ndarray,
         "industry_ic": industry_ic,
         "ic_decay": ic_decay,
         "quantile_returns": quantile_returns,
-        "quantile_nav": quantile_nav(score, close, valid, dates),
+        "quantile_nav": quantile_nav(score, close, valid, dates, n_groups),
+        "n_groups": n_groups,
         "stability": factor_stability(score, valid),
         "sample_series": sample,
         "stats": {

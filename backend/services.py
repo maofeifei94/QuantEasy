@@ -424,9 +424,11 @@ def factor_preview(payload: dict) -> dict:
     data, factor, score = _prepare(payload)
     valid = _apply_filters(data, payload.get("filters"))
     horizon = int(payload.get("horizon") or 5)
+    n_groups = int(payload.get("quantiles") or 5)
     result = analysis.analyze(
         score, data["close"], valid, data["dates"], data["codes"],
         data["names"], horizon=horizon, industries=data["industries"],
+        n_groups=n_groups,
     )
     return {
         "factor": {
