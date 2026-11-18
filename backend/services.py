@@ -1283,6 +1283,12 @@ def _trade_friction_args(payload: dict):
     return hold, cap
 
 
+def _rebalance_band(payload: dict) -> float:
+    """调仓缓冲带：权重变化小于该比例的个股维持原仓。"""
+    pct = max(0.0, min(float(payload.get("rebalance_band_pct") or 0), 50.0))
+    return pct / 100.0
+
+
 def _vol_target_args(payload: dict):
     """目标年化波动率（百分比）与估计窗口。"""
     pct = max(0.0, min(float(payload.get("vol_target_pct") or 0), 100.0))
@@ -1345,6 +1351,7 @@ def run_backtest(payload: dict) -> dict:
     industry_idx, industry_cap, n_industries = _industry_cap_args(payload, data)
     min_hold_days, turnover_cap = _trade_friction_args(payload)
     vol_target, vol_lookback = _vol_target_args(payload)
+    rebalance_band = _rebalance_band(payload)
     buy_block = sell_block = None
     if trade_constraints:
         rets = data["returns"]
@@ -1363,7 +1370,7 @@ def run_backtest(payload: dict) -> dict:
         stop_loss=stop_loss, take_profit=take_profit, trailing_stop=trailing_stop,
         industry_idx=industry_idx, industry_cap=industry_cap, n_industries=n_industries,
         min_hold_days=min_hold_days, turnover_cap=turnover_cap, position_cap=position_cap,
-        vol_target=vol_target, vol_lookback=vol_lookback,
+        vol_target=vol_target, vol_lookback=vol_lookback, rebalance_band=rebalance_band,
     )
     bench = sim["benchmark"]
     benchmark_name = "股票池等权"
@@ -1510,6 +1517,7 @@ def run_backtest(payload: dict) -> dict:
             "max_position_pct": position_cap * 100,
             "vol_target_pct": vol_target * 100,
             "vol_lookback": vol_lookback,
+            "rebalance_band_pct": rebalance_band * 100,
             "min_hold_days": min_hold_days,
             "turnover_cap_pct": turnover_cap * 100,
             "market_timing": timing_window > 1,
@@ -1570,6 +1578,7 @@ def optimize_backtest(payload: dict) -> dict:
     position_cap = _position_cap(payload)
     industry_idx, industry_cap, n_industries = _industry_cap_args(payload, data)
     min_hold_days, turnover_cap = _trade_friction_args(payload)
+    rebalance_band = _rebalance_band(payload)
     buy_block = sell_block = None
     if trade_constraints:
         rets = data["returns"]
@@ -1599,6 +1608,7 @@ def optimize_backtest(payload: dict) -> dict:
                 stop_loss=stop_loss, take_profit=take_profit, trailing_stop=trailing_stop,
                 industry_idx=industry_idx, industry_cap=industry_cap, n_industries=n_industries,
                 min_hold_days=min_hold_days, turnover_cap=turnover_cap, position_cap=position_cap,
+                rebalance_band=rebalance_band,
             )
             m = sim["metrics"]
             cells.append({
@@ -2054,6 +2064,7 @@ def batch_backtest(payload: dict) -> dict:
     position_cap = _position_cap(payload)
     industry_idx, industry_cap, n_industries = _industry_cap_args(payload, data)
     min_hold_days, turnover_cap = _trade_friction_args(payload)
+    rebalance_band = _rebalance_band(payload)
     reb_mode, reb_weekday, reb_month_day = _rebalance_args(payload)
     buy_block = sell_block = None
     if trade_constraints:
@@ -2089,6 +2100,7 @@ def batch_backtest(payload: dict) -> dict:
                 stop_loss=stop_loss, take_profit=take_profit, trailing_stop=trailing_stop,
                 industry_idx=industry_idx, industry_cap=industry_cap, n_industries=n_industries,
                 min_hold_days=min_hold_days, turnover_cap=turnover_cap, position_cap=position_cap,
+                rebalance_band=rebalance_band,
             )
             stats = analysis.quick_ic(score, data["close"], valid, 5)
         except Exception:
@@ -2170,6 +2182,7 @@ def optimize_factor_weights(payload: dict) -> dict:
     industry_idx, industry_cap, n_industries = _industry_cap_args(payload, data)
     min_hold_days, turnover_cap = _trade_friction_args(payload)
     vol_target, vol_lookback = _vol_target_args(payload)
+    rebalance_band = _rebalance_band(payload)
 
     k = len(specs)
     evaluations = {"n": 0}
@@ -2191,7 +2204,7 @@ def optimize_factor_weights(payload: dict) -> dict:
             stop_loss=stop_loss, take_profit=take_profit, trailing_stop=trailing_stop,
             industry_idx=industry_idx, industry_cap=industry_cap, n_industries=n_industries,
             min_hold_days=min_hold_days, turnover_cap=turnover_cap, position_cap=position_cap,
-            vol_target=vol_target, vol_lookback=vol_lookback,
+            vol_target=vol_target, vol_lookback=vol_lookback, rebalance_band=rebalance_band,
         )
         evaluations["n"] += 1
         return float(sim["metrics"][metric]), sim["metrics"]
@@ -2279,6 +2292,8 @@ def cost_sensitivity(payload: dict) -> dict:
     trailing_stop = max(0.0, min(float(payload.get("trailing_stop_pct") or 0), 50)) / 100.0
     position_cap = _position_cap(payload)
     industry_idx, industry_cap, n_industries = _industry_cap_args(payload, data)
+    min_hold_days, turnover_cap = _trade_friction_args(payload)
+    rebalance_band = _rebalance_band(payload)
 
     levels = [0, 5, 10, 15, 20, 30]
     items = []
@@ -2292,6 +2307,7 @@ def cost_sensitivity(payload: dict) -> dict:
             stop_loss=stop_loss, take_profit=take_profit, trailing_stop=trailing_stop,
             industry_idx=industry_idx, industry_cap=industry_cap, n_industries=n_industries,
             min_hold_days=min_hold_days, turnover_cap=turnover_cap, position_cap=position_cap,
+            rebalance_band=rebalance_band,
         )
         m = sim["metrics"]
         items.append({
@@ -2341,6 +2357,7 @@ def walk_forward(payload: dict) -> dict:
     industry_idx, industry_cap, n_industries = _industry_cap_args(payload, data)
     position_cap = _position_cap(payload)
     min_hold_days, turnover_cap = _trade_friction_args(payload)
+    rebalance_band = _rebalance_band(payload)
     stop_loss = max(0.0, min(float(payload.get("stop_loss_pct") or 0), 50)) / 100.0
     take_profit = max(0.0, min(float(payload.get("take_profit_pct") or 0), 200)) / 100.0
     trailing_stop = max(0.0, min(float(payload.get("trailing_stop_pct") or 0), 50)) / 100.0
@@ -2372,6 +2389,7 @@ def walk_forward(payload: dict) -> dict:
             stop_loss=stop_loss, take_profit=take_profit, trailing_stop=trailing_stop,
             industry_idx=industry_idx, industry_cap=industry_cap, n_industries=n_industries,
             min_hold_days=min_hold_days, turnover_cap=turnover_cap, position_cap=position_cap,
+            rebalance_band=rebalance_band,
         )
 
     fold_rows, stitched, stitched_dates = [], [], []

@@ -1322,6 +1322,7 @@
       vol_lookback: Number($("#btVolLookback").value) || 20,
       min_hold_days: Number($("#btMinHold").value) || 0,
       turnover_cap_pct: Number($("#btTurnoverCap").value) || 0,
+      rebalance_band_pct: Number($("#btRebalanceBand").value) || 0,
       market_timing: $("#btTiming").value !== "none",
       timing_window: Number($("#btTiming").value) || 0,
       oos_split: Number($("#btOOS").value) || 0,
@@ -1564,6 +1565,7 @@
     setVal("#btVolLookback", cfg.vol_lookback || 20);
     setVal("#btMinHold", cfg.min_hold_days || 0);
     setVal("#btTurnoverCap", cfg.turnover_cap_pct || 0);
+    setVal("#btRebalanceBand", cfg.rebalance_band_pct || 0);
     setVal("#btBenchmark", cfg.benchmark);
     setVal("#btTiming", cfg.market_timing ? String(cfg.timing_window || 20) : "none");
     setVal("#btOOS", cfg.oos_split || 0);
@@ -1888,6 +1890,7 @@
               ${cfg.vol_target_pct > 0 ? `<span class="chip amber">目标波动 ${fmtNum(cfg.vol_target_pct, 0)}%</span>` : ""}
               ${cfg.min_hold_days > 0 ? `<span class="chip">最小持有 ${cfg.min_hold_days} 天</span>` : ""}
               ${cfg.turnover_cap_pct > 0 ? `<span class="chip">换手上限 ${fmtNum(cfg.turnover_cap_pct, 0)}%</span>` : ""}
+              ${cfg.rebalance_band_pct > 0 ? `<span class="chip">缓冲带 ${fmtNum(cfg.rebalance_band_pct, 1)}%</span>` : ""}
               ${cfg.long_short ? `<span class="chip amber">多空</span>` : ""}
               ${cfg.market_timing ? `<span class="chip amber">MA${cfg.timing_window || 20} 择时</span>` : ""}
               ${cfg.oos_split > 0 ? `<span class="chip">样本外 ${Math.round(cfg.oos_split * 100)}%</span>` : ""}

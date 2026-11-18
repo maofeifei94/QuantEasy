@@ -132,7 +132,7 @@ def _vol_target_scale(close: jnp.ndarray, target: jnp.ndarray,
     "top_n", "long_short", "weighting", "max_weight", "constraints",
     "use_override", "stop_loss", "take_profit", "trailing_stop",
     "industry_cap", "n_industries", "min_hold", "turnover_cap", "position_cap",
-    "vol_target", "vol_lookback",
+    "vol_target", "vol_lookback", "rebalance_band",
 ))
 def _simulate(
     score: jnp.ndarray,
@@ -165,6 +165,7 @@ def _simulate(
     position_cap: float,
     vol_target: float,
     vol_lookback: int,
+    rebalance_band: float,
 ):
     T, N = score.shape
     if use_override:
@@ -238,6 +239,11 @@ def _simulate(
             alpha = jnp.minimum(1.0, turnover_cap / jnp.maximum(total, 1e-12))
             blended = w_stop + alpha * (desired - w_stop)
             desired = jnp.where(rb, blended, desired)
+
+        if rebalance_band > 0:
+            # 调仓缓冲带：权重变化小于阈值的个股维持原仓，避免小额频繁交易
+            tiny = jnp.abs(desired - w_stop) <= rebalance_band
+            desired = jnp.where(rb & tiny, w_stop, desired)
 
         if use_stop:
             desired = jnp.where(hit, 0.0, desired)
@@ -348,6 +354,7 @@ def run_backtest(
     position_cap: float = 1.0,
     vol_target: float = 0.0,
     vol_lookback: int = 20,
+    rebalance_band: float = 0.0,
 ) -> dict[str, Any]:
     score_j = jnp.asarray(score, dtype=jnp.float64)
     close_j = jnp.asarray(close, dtype=jnp.float64)
@@ -374,7 +381,7 @@ def run_backtest(
         float(stop_loss), float(take_profit), float(trailing_stop),
         ind_j, float(industry_cap), int(n_industries),
         int(min_hold_days), float(turnover_cap), float(position_cap),
-        float(vol_target), int(vol_lookback),
+        float(vol_target), int(vol_lookback), float(rebalance_band),
     )
     m = _metrics(net, nav, dw)
 
