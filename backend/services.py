@@ -1485,6 +1485,28 @@ def _industry_exposure(weights: np.ndarray, rebalance: np.ndarray,
     return sorted(out, key=lambda x: -abs(x["last"]))
 
 
+def _industry_neutral_targets(score: np.ndarray, valid: np.ndarray,
+                              industry_idx: np.ndarray, rebalance: np.ndarray,
+                              per_industry: int) -> np.ndarray:
+    """行业中性选股：每个调仓日各行业按得分取前 N 名，行业间等权、行业内等权。"""
+    T, N = score.shape
+    weights = np.zeros((T, N), dtype=np.float64)
+    for t in np.where(rebalance)[0]:
+        ok = valid[t] & np.isfinite(score[t])
+        if not ok.any():
+            continue
+        picked: list[int] = []
+        for g in np.unique(industry_idx[ok]):
+            idx = np.where(ok & (industry_idx == g))[0]
+            if idx.size == 0:
+                continue
+            order = idx[np.argsort(-score[t][idx])][:per_industry]
+            picked.extend(int(j) for j in order)
+        if picked:
+            weights[t, picked] = 1.0 / len(picked)
+    return weights
+
+
 def _position_cap(payload: dict) -> float:
     """最大总仓位比例，0 或 100 表示满仓。"""
     pct = float(payload.get("max_position_pct") or 100.0)
@@ -1556,6 +1578,18 @@ def run_backtest(payload: dict) -> dict:
     if weighting == "risk_parity" and not long_short:
         weight_override = _risk_parity_targets(
             score, valid, data["returns"], rebalance, top_n, top_frac, max_weight
+        )
+        use_override = True
+    ind_neutral = bool(payload.get("industry_neutral"))
+    ind_neutral_n = max(1, min(int(payload.get("industry_neutral_n") or 2), 20))
+    if ind_neutral:
+        if long_short:
+            raise ValueError("行业中性选股暂不支持多空组合")
+        ind_idx = data.get("industry_idx")
+        if ind_idx is None:
+            raise ValueError("当前数据缺少行业信息，无法进行行业中性选股")
+        weight_override = _industry_neutral_targets(
+            score, valid, ind_idx, rebalance, ind_neutral_n
         )
         use_override = True
     timing_window = int(payload.get("timing_window") or 0) if payload.get("market_timing") else 0
@@ -1736,6 +1770,8 @@ def run_backtest(payload: dict) -> dict:
             "vol_target_pct": vol_target * 100,
             "vol_lookback": vol_lookback,
             "rebalance_band_pct": rebalance_band * 100,
+            "industry_neutral": ind_neutral,
+            "industry_neutral_n": ind_neutral_n,
             "factor_timing": bool(factor.get("timing")),
             "timing_lookback": (factor.get("timing") or {}).get("lookback", 0),
             "min_hold_days": min_hold_days,

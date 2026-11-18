@@ -454,6 +454,13 @@
               <label>最大仓位 <span class="hint">%，100=满仓</span></label>
               <input type="number" id="btMaxPosition" value="100" min="5" max="100" step="5">
             </div>
+            <div class="field">
+              <label>行业中性选股 <span class="hint">每行业取前 N 名，等权</span></label>
+              <div class="form-row" style="gap:6px;align-items:center">
+                <label class="switch"><input type="checkbox" id="btIndustryNeutral"><span class="track"></span><span>启用</span></label>
+                <input type="number" id="btIndustryNeutralN" value="2" min="1" max="20" step="1" style="width:66px">
+              </div>
+            </div>
           </div>
           <div class="form-grid">
             <div class="field">
