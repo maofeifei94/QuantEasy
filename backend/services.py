@@ -1816,8 +1816,7 @@ def _screen_selection(data: dict, specs: list[dict], valid: np.ndarray,
         mask = np.zeros(N, dtype=bool)
         for p in passes:
             mask |= p
-    idxs = np.where(mask)[0]
-    score = np.nansum(np.stack(zs), axis=0) if idxs.size else np.zeros(N)
+    score = np.nansum(np.stack(zs), axis=0)
     return {"mask": mask, "score": score, "rows": rows,
             "cond_detail": detail, "failed": None}
 
@@ -1830,6 +1829,9 @@ def screen_stocks(payload: dict) -> dict:
     logic = payload.get("logic") or "and"
     if logic not in ("and", "or"):
         logic = "and"
+    select_mode = payload.get("select_mode") or "conditions"
+    if select_mode not in ("conditions", "score"):
+        select_mode = "conditions"
     specs = _screen_specs(data, payload.get("conditions") or [])
 
     base_counts = (np.isfinite(specs[0]["raw"]) & valid).sum(axis=1)
@@ -1855,11 +1857,15 @@ def screen_stocks(payload: dict) -> dict:
     score = picked["score"]
     cond_detail = picked["cond_detail"]
 
-    # 多日信号确认：近 M 个交易日中至少 K 日满足条件
+    # 综合分模式：不做条件过滤，直接按加权综合分对全部有效股票排序
+    if select_mode == "score":
+        mask = valid[t] & np.isfinite(score)
+
+    # 多日信号确认：近 M 个交易日中至少 K 日满足条件（仅条件模式）
     confirm_days = max(0, min(int(payload.get("confirm_days") or 0), 10))
     confirm_min = 0
     hit_days = None
-    if confirm_days > 1:
+    if select_mode == "conditions" and confirm_days > 1:
         confirm_min = max(1, min(int(payload.get("confirm_min") or confirm_days), confirm_days))
         hit_days = np.zeros(N, dtype=int)
         for tt in range(max(0, t - confirm_days + 1), t + 1):
@@ -1923,7 +1929,8 @@ def screen_stocks(payload: dict) -> dict:
         "count": int(mask.sum()),
         "returned": len(items),
         "universe_size": int(valid[t].sum()),
-        "confirm": {"days": confirm_days, "min": confirm_min} if confirm_days > 1 else None,
+        "select_mode": select_mode,
+        "confirm": {"days": confirm_days, "min": confirm_min} if hit_days is not None else None,
         "industry_limit": ind_limit,
         "conditions": cond_detail,
         "labels": [item["spec"]["label"] for item in specs],
@@ -1939,6 +1946,9 @@ def screen_history(payload: dict) -> dict:
     logic = payload.get("logic") or "and"
     if logic not in ("and", "or"):
         logic = "and"
+    select_mode = payload.get("select_mode") or "conditions"
+    if select_mode not in ("conditions", "score"):
+        select_mode = "conditions"
     specs = _screen_specs(data, payload.get("conditions") or [])
     horizon = max(2, min(int(payload.get("horizon") or 20), 120))
     months = max(3, min(int(payload.get("months") or 24), 60))
@@ -1957,7 +1967,10 @@ def screen_history(payload: dict) -> dict:
     nav = bench_nav = 1.0
     for t in snaps:
         picked = _screen_selection(data, specs, valid, t, logic)
-        idxs = np.where(picked["mask"])[0]
+        if select_mode == "score":
+            idxs = np.where(valid[t] & np.isfinite(picked["score"]))[0]
+        else:
+            idxs = np.where(picked["mask"])[0]
         order = idxs[np.argsort(-picked["score"][idxs])][:limit] if idxs.size else idxs
         fwd = close[t + horizon] / close[t] - 1.0
         universe = valid[t] & np.isfinite(fwd)
@@ -2003,6 +2016,7 @@ def screen_history(payload: dict) -> dict:
         "rows": rows,
         "labels": [item["spec"]["label"] for item in specs],
         "logic": logic,
+        "select_mode": select_mode,
         "universe_size": int(valid[-1].sum()),
     }
 

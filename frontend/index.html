@@ -546,6 +546,15 @@
         </div>
         <div class="form-grid" style="margin-top:12px">
           <div class="field">
+            <label>选股方式</label>
+            <select id="scrMode">
+              <option value="conditions">条件筛选（满足全部 / 任一条件）</option>
+              <option value="score">综合分排序（按加权得分取前 N）</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-grid" style="margin-top:12px">
+          <div class="field">
             <label>信号确认天数 <span class="hint">日，0=不确认</span></label>
             <input type="number" id="scrConfirmDays" value="0" min="0" max="10" step="1">
           </div>

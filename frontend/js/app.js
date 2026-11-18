@@ -2612,6 +2612,7 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
           scope: c.scope || "all", weight: c.weight == null ? 1 : c.weight,
         })),
         logic: $("#scrLogic").value,
+        select_mode: $("#scrMode").value || "conditions",
         sort_by: $("#scrSort").value || "score",
         confirm_days: Number($("#scrConfirmDays").value) || 0,
         confirm_min: Number($("#scrConfirmMin").value) || 0,
@@ -2680,6 +2681,7 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
           scope: c.scope || "all", weight: c.weight == null ? 1 : c.weight,
         })),
         logic: $("#scrLogic").value,
+        select_mode: $("#scrMode").value || "conditions",
         horizon: Number($("#scrHistHorizon").value) || 20,
         months: Number($("#scrHistMonths").value) || 24,
       };
@@ -2745,7 +2747,10 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
     const indTop = Object.entries(indCount).sort((a, b) => b[1] - a[1]);
     const indText = indTop.slice(0, 4).map(([k, v]) => `${k} ${v}`).join(" · ") +
       (indTop.length > 4 ? ` · 其他 ${indTop.length - 4} 个行业` : "");
-    $("#scrMeta").textContent = `${res.as_of} · 股票池 ${res.universe_size} 只 · 命中 ${res.count} 只 · 显示 ${res.returned} 只 · 逻辑${res.logic === "or" ? "或" : "且"}` +
+    const scoreMode = res.select_mode === "score";
+    $("#scrMeta").textContent = `${res.as_of} · 股票池 ${res.universe_size} 只 · ` +
+      `${scoreMode ? "候选" : "命中"} ${res.count} 只 · 显示 ${res.returned} 只 · ` +
+      (scoreMode ? "综合分排序" : `逻辑${res.logic === "or" ? "或" : "且"}`) +
       (res.confirm ? ` · 确认 ${res.confirm.min}/${res.confirm.days} 日` : "") +
       (res.industry_limit > 0 ? ` · 每行业≤${res.industry_limit} 只` : "") +
       (indText ? ` · ${indText}` : "");
@@ -2819,6 +2824,7 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
       confirmDays: Number($("#scrConfirmDays").value) || 0,
       confirmMin: Number($("#scrConfirmMin").value) || 0,
       industryLimit: Number($("#scrIndustryLimit").value) || 0,
+      mode: $("#scrMode").value || "conditions",
       logic: $("#scrLogic").value,
       sortBy: $("#scrSort").value || "score",
     });
@@ -2853,6 +2859,7 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
       $("#scrConfirmDays").value = s.confirmDays || 0;
       $("#scrConfirmMin").value = s.confirmMin || 0;
       $("#scrIndustryLimit").value = s.industryLimit || 0;
+      $("#scrMode").value = s.mode || "conditions";
       $("#scrLogic").value = s.logic || "and";
       renderScreenerConds();
       if (s.sortBy) $("#scrSort").value = s.sortBy;
