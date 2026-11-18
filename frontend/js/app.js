@@ -825,13 +825,22 @@
       <div class="field" style="margin-top:12px"><label>因子表达式</label>
         <textarea id="nfExpr" rows="4">${esc(expr)}</textarea>
       </div>
+      <div class="form-row" style="margin-top:8px;gap:6px;flex-wrap:wrap">
+        <span class="hint">示例</span>
+        <button type="button" class="btn ghost sm" data-tpl-expr="rank(close / ts_delay(close, 20) - 1)">20日动量</button>
+        <button type="button" class="btn ghost sm" data-tpl-expr="rank(-(close / ts_delay(close, 5) - 1))">5日反转</button>
+        <button type="button" class="btn ghost sm" data-tpl-expr="rank(-ts_std(returns, 20))">低波动</button>
+        <button type="button" class="btn ghost sm" data-tpl-expr="rank(volume / ts_mean(volume, 20))">量比</button>
+      </div>
       <div class="field" style="margin-top:12px"><label>描述</label><input id="nfDesc" type="text" placeholder="说明因子逻辑（可选）" value="${esc(existing ? (existing.description || "") : "")}"></div>
       <div style="margin-top:14px">
         <div class="panel-sub">可用字段：<code style="color:var(--green)">open high low close volume amount vwap returns</code></div>
         <div class="fn-chips" id="fnChips"></div>
       </div>
+      <div id="nfTest" class="hint-box" style="display:none;margin-top:12px"></div>
       <div class="modal-foot">
         <button class="btn ghost" data-close>取消</button>
+        <button class="btn ghost" id="nfTestBtn">测试表达式</button>
         <button class="btn primary" id="nfSave">${editing ? "保存修改" : "保存因子"}</button>
       </div>`);
     const fns = ["ts_mean(x, 20)", "ts_std(x, 20)", "ts_rank(x, 20)", "ts_delay(x, 20)",
@@ -845,6 +854,45 @@
       ta.value = ta.value.slice(0, pos) + b.dataset.fn + ta.value.slice(pos);
       ta.focus();
     }));
+    $$("#modalBox [data-tpl-expr]").forEach((b) => b.addEventListener("click", () => {
+      $("#nfExpr").value = b.dataset.tplExpr;
+    }));
+    $("#nfTestBtn").addEventListener("click", async () => {
+      const expression = $("#nfExpr").value.trim();
+      if (!expression) { toast("请填写因子表达式", true); return; }
+      const box = $("#nfTest");
+      box.style.display = "block";
+      box.innerHTML = `<span class="spinner"></span> 正在计算 IC 与分组收益…`;
+      const btn = $("#nfTestBtn");
+      btn.disabled = true;
+      try {
+        const res = await api("/api/factors/preview", {
+          method: "POST",
+          body: {
+            expression,
+            direction: Number($("#nfDirection").value),
+            preprocess: { winsorize: true, standardize: true },
+          },
+        });
+        const ic = res.ic || {};
+        const q = res.quantile_returns || [];
+        const q1 = q[0];
+        const q5 = q[q.length - 1];
+        const spread = (q1 && q5) ? q5.annualized - q1.annualized : null;
+        box.innerHTML = `<div class="factor-meta">
+          <span class="chip ${ic.mean > 0 ? "green" : "amber"}">IC ${fmtNum(ic.mean, 4)}</span>
+          <span class="chip">ICIR ${fmtNum(ic.ir, 3)}</span>
+          <span class="chip">t 值 ${fmtNum(ic.t_stat, 2)}</span>
+          <span class="chip">IC>0 占比 ${fmtPct(ic.positive_rate, 1)}</span>
+          <span class="chip">覆盖率 ${fmtPct((res.stats || {}).coverage, 1)}</span>
+          ${spread == null ? "" : `<span class="chip ${spread > 0 ? "green" : "amber"}">Q5-Q1 年化 ${fmtPct(spread, 1)}</span>`}
+        </div><div class="panel-sub" style="margin-top:6px">基于当前股票池全区间计算的快速检验，保存后可在因子实验室查看完整报告</div>`;
+      } catch (e) {
+        box.innerHTML = `<span class="down">${esc(e.message)}</span>`;
+      } finally {
+        btn.disabled = false;
+      }
+    });
     $("#nfSave").addEventListener("click", async () => {
       const name = $("#nfName").value.trim();
       const expression = $("#nfExpr").value.trim();
