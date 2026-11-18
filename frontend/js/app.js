@@ -2241,6 +2241,7 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
         conditions: state.screenerConds.map((c) => ({
           factor_id: c.factorId, mode: c.mode, value: c.value, scope: c.scope || "all",
         })),
+        logic: $("#scrLogic").value,
       };
       const res = await api("/api/screener", { method: "POST", body: payload });
       state.screenerResult = res;
@@ -2256,7 +2257,15 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
 
   function renderScreenerResult(res) {
     const labels = res.labels || [];
-    $("#scrMeta").textContent = `${res.as_of} · 股票池 ${res.universe_size} 只 · 命中 ${res.count} 只 · 显示 ${res.returned} 只`;
+    const indCount = {};
+    (res.items || []).forEach((it) => {
+      indCount[it.industry] = (indCount[it.industry] || 0) + 1;
+    });
+    const indTop = Object.entries(indCount).sort((a, b) => b[1] - a[1]);
+    const indText = indTop.slice(0, 4).map(([k, v]) => `${k} ${v}`).join(" · ") +
+      (indTop.length > 4 ? ` · 其他 ${indTop.length - 4} 个行业` : "");
+    $("#scrMeta").textContent = `${res.as_of} · 股票池 ${res.universe_size} 只 · 命中 ${res.count} 只 · 显示 ${res.returned} 只 · 逻辑${res.logic === "or" ? "或" : "且"}` +
+      (indText ? ` · ${indText}` : "");
     $("#scrHead").innerHTML = `<tr><th>代码</th><th>名称</th><th>行业</th>` +
       labels.map((l) => `<th style="text-align:right">${esc(l)}</th>`).join("") +
       `<th style="text-align:right">综合分</th><th style="text-align:right">最新价</th><th style="text-align:right">涨跌幅</th></tr>`;
@@ -2320,6 +2329,7 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
         amount: Number($("#scrAmount").value) || 0,
       },
       limit: Number($("#scrLimit").value) || 50,
+      logic: $("#scrLogic").value,
     });
     localStorage.setItem(SCHEME_KEY, JSON.stringify(schemes.slice(0, 30)));
     toast("选股方案已保存");
@@ -2347,6 +2357,7 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
       $("#scrBJ").checked = f.bj !== false;
       $("#scrAmount").value = f.amount || 0;
       $("#scrLimit").value = s.limit || 50;
+      $("#scrLogic").value = s.logic || "and";
       renderScreenerConds();
       closeModal();
       toast(`已载入方案「${s.name}」`);

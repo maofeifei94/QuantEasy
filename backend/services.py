@@ -1645,7 +1645,7 @@ def latest_signal(payload: dict) -> dict:
 
 
 def screen_stocks(payload: dict) -> dict:
-    """多条件选股：按交易日对因子做排名/阈值过滤，条件之间为 AND 关系。"""
+    """多条件选股：按交易日对因子做排名/阈值过滤，条件支持 AND / OR 组合。"""
     codes = payload.get("codes") or None
     data = panel.build_panel(codes, payload.get("start") or None, payload.get("end") or None)
     valid = _apply_filters(data, payload.get("filters"))
@@ -1654,6 +1654,9 @@ def screen_stocks(payload: dict) -> dict:
         raise ValueError("请至少添加一个选股条件")
     if len(conds) > 6:
         raise ValueError("最多支持 6 个选股条件")
+    logic = payload.get("logic") or "and"
+    if logic not in ("and", "or"):
+        logic = "and"
 
     specs = []
     for c in conds:
@@ -1690,12 +1693,13 @@ def screen_stocks(payload: dict) -> dict:
     N = len(data["codes"])
     valid_t = valid[t]
     mask = valid_t.copy()
+    passes: list[np.ndarray] = []
     rows: list[np.ndarray] = []
     zs: list[np.ndarray] = []
     cond_detail = []
     for item in specs:
         row = item["raw"][t]
-        base = mask & np.isfinite(row)
+        base = (valid_t if logic == "or" else mask) & np.isfinite(row)
         if not base.any():
             raise ValueError(f"条件「{item['spec']['label']}」在所选日期没有有效值")
         mode, value = item["mode"], item["value"]
@@ -1730,7 +1734,14 @@ def screen_stocks(payload: dict) -> dict:
             "value": value,
             "passed": int(passed.sum()),
         })
-        mask = passed
+        passes.append(passed)
+        if logic == "and":
+            mask = passed
+
+    if logic == "or":
+        mask = np.zeros(N, dtype=bool)
+        for p in passes:
+            mask |= p
 
     idxs = np.where(mask)[0]
     close = data["close"]
@@ -1756,6 +1767,7 @@ def screen_stocks(payload: dict) -> dict:
         })
     return {
         "as_of": data["dates"][t],
+        "logic": logic,
         "count": int(mask.sum()),
         "returned": len(items),
         "universe_size": int(valid_t.sum()),
