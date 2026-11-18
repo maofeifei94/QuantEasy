@@ -96,6 +96,7 @@ def _target_weights(
 @partial(jax.jit, static_argnames=(
     "top_n", "long_short", "weighting", "max_weight", "constraints",
     "use_override", "stop_loss", "take_profit", "industry_cap", "n_industries",
+    "min_hold", "turnover_cap",
 ))
 def _simulate(
     score: jnp.ndarray,
@@ -122,6 +123,8 @@ def _simulate(
     industry_idx: jnp.ndarray,
     industry_cap: float,
     n_industries: int,
+    min_hold: int,
+    turnover_cap: float,
 ):
     T, N = score.shape
     if use_override:
@@ -137,7 +140,7 @@ def _simulate(
     use_stop = stop_loss > 0 or take_profit > 0
 
     def fill(state, inputs):
-        w_prev, entry = state
+        w_prev, entry, age = state
         tgt, rb, bb, sb, px = inputs
         if use_stop:
             has = (w_prev > 1e-9) & (entry > 0) & (~sb)
@@ -150,6 +153,7 @@ def _simulate(
             entry_stop = jnp.where(hit, 0.0, entry)
             tgt_adj = jnp.where(hit, 0.0, tgt)
         else:
+            hit = jnp.zeros(N, dtype=bool)
             w_stop = w_prev
             entry_stop = entry
             tgt_adj = tgt
@@ -162,21 +166,45 @@ def _simulate(
             )
             desired = adjusted
 
+        if min_hold > 0:
+            # 持有未满 min_hold 天的仓位不在本次调仓卖出，冻结其权重，
+            # 其余仓位按剩余预算等比缩放，避免总仓位超配。
+            protected = rb & (jnp.abs(w_prev) > 1e-9) & (age < float(min_hold))
+            frozen = jnp.where(protected, w_stop, 0.0)
+            free = jnp.where(protected, 0.0, desired)
+            frozen_sum = jnp.sum(jnp.abs(frozen))
+            free_sum = jnp.sum(jnp.abs(free))
+            budget = jnp.maximum(1.0 - frozen_sum, 0.0)
+            scale = jnp.where(free_sum > budget, budget / jnp.maximum(free_sum, 1e-12), 1.0)
+            desired = frozen + free * scale
+
+        if turnover_cap > 0:
+            # 单次调仓换手上限：按比例在旧仓与目标仓之间插值
+            delta = jnp.abs(desired - w_stop)
+            total = jnp.sum(delta)
+            alpha = jnp.minimum(1.0, turnover_cap / jnp.maximum(total, 1e-12))
+            blended = w_stop + alpha * (desired - w_stop)
+            desired = jnp.where(rb, blended, desired)
+
+        if use_stop:
+            desired = jnp.where(hit, 0.0, desired)
+
         if use_stop:
             new_entry = jnp.where(
                 rb,
                 jnp.where(
-                    (tgt_adj > 1e-9) & (w_stop <= 1e-9), px,
-                    jnp.where(tgt_adj <= 1e-9, 0.0, entry_stop),
+                    (desired > 1e-9) & (w_stop <= 1e-9), px,
+                    jnp.where(desired <= 1e-9, 0.0, entry_stop),
                 ),
                 entry_stop,
             )
         else:
             new_entry = entry
-        return (desired, new_entry), desired
+        new_age = jnp.where(jnp.abs(desired) > 1e-9, age + 1.0, 0.0)
+        return (desired, new_entry, new_age), desired
 
     _, W = jax.lax.scan(
-        fill, (jnp.zeros(N), jnp.zeros(N)),
+        fill, (jnp.zeros(N), jnp.zeros(N), jnp.zeros(N)),
         (target, rebalance, buy_block, sell_block, close),
     )
 
@@ -260,6 +288,8 @@ def run_backtest(
     industry_idx: np.ndarray | None = None,
     industry_cap: float = 0.0,
     n_industries: int = 0,
+    min_hold_days: int = 0,
+    turnover_cap: float = 0.0,
 ) -> dict[str, Any]:
     score_j = jnp.asarray(score, dtype=jnp.float64)
     close_j = jnp.asarray(close, dtype=jnp.float64)
@@ -285,6 +315,7 @@ def run_backtest(
         buy_j, sell_j, bool(constraints), override_j, bool(use_override),
         float(stop_loss), float(take_profit),
         ind_j, float(industry_cap), int(n_industries),
+        int(min_hold_days), float(turnover_cap),
     )
     m = _metrics(net, nav, dw)
 

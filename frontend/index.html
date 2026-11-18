@@ -399,6 +399,16 @@
           </div>
           <div class="form-grid">
             <div class="field">
+              <label>最小持有期 <span class="hint">天，0=不限制</span></label>
+              <input type="number" id="btMinHold" value="0" min="0" max="120" step="1">
+            </div>
+            <div class="field">
+              <label>单次换手上限 <span class="hint">%，0=不限制</span></label>
+              <input type="number" id="btTurnoverCap" value="0" min="0" max="100" step="5">
+            </div>
+          </div>
+          <div class="form-grid">
+            <div class="field">
               <label>业绩基准</label>
               <select id="btBenchmark">
                 <option value="universe">股票池等权</option>

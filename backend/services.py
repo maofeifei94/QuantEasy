@@ -970,6 +970,13 @@ def _industry_exposure(weights: np.ndarray, rebalance: np.ndarray,
     return sorted(out, key=lambda x: -abs(x["last"]))
 
 
+def _trade_friction_args(payload: dict):
+    """解析交易摩擦控制参数：最小持有天数、单次调仓换手上限。"""
+    hold = max(0, min(int(payload.get("min_hold_days") or 0), 120))
+    cap = max(0.0, min(float(payload.get("turnover_cap_pct") or 0), 100.0)) / 100.0
+    return hold, cap
+
+
 def _industry_cap_args(payload: dict, data: dict):
     """解析行业总权重上限参数，返回 (industry_idx, cap, n_industries)。"""
     cap = max(0.0, min(float(payload.get("industry_cap") or 0), 100.0)) / 100.0
@@ -1018,6 +1025,7 @@ def run_backtest(payload: dict) -> dict:
     stop_loss = max(0.0, min(float(payload.get("stop_loss_pct") or 0), 50)) / 100.0
     take_profit = max(0.0, min(float(payload.get("take_profit_pct") or 0), 200)) / 100.0
     industry_idx, industry_cap, n_industries = _industry_cap_args(payload, data)
+    min_hold_days, turnover_cap = _trade_friction_args(payload)
     buy_block = sell_block = None
     if trade_constraints:
         rets = data["returns"]
@@ -1035,6 +1043,7 @@ def run_backtest(payload: dict) -> dict:
         weight_override=weight_override, use_override=use_override,
         stop_loss=stop_loss, take_profit=take_profit,
         industry_idx=industry_idx, industry_cap=industry_cap, n_industries=n_industries,
+        min_hold_days=min_hold_days, turnover_cap=turnover_cap,
     )
     bench = sim["benchmark"]
     benchmark_name = "股票池等权"
@@ -1161,6 +1170,8 @@ def run_backtest(payload: dict) -> dict:
             "weighting": weighting,
             "max_weight": max_weight * 100,
             "industry_cap": industry_cap * 100,
+            "min_hold_days": min_hold_days,
+            "turnover_cap_pct": turnover_cap * 100,
             "market_timing": timing_window > 1,
             "timing_window": timing_window,
             "trade_constraints": trade_constraints,
@@ -1215,6 +1226,7 @@ def optimize_backtest(payload: dict) -> dict:
     stop_loss = max(0.0, min(float(payload.get("stop_loss_pct") or 0), 50)) / 100.0
     take_profit = max(0.0, min(float(payload.get("take_profit_pct") or 0), 200)) / 100.0
     industry_idx, industry_cap, n_industries = _industry_cap_args(payload, data)
+    min_hold_days, turnover_cap = _trade_friction_args(payload)
     buy_block = sell_block = None
     if trade_constraints:
         rets = data["returns"]
@@ -1243,6 +1255,7 @@ def optimize_backtest(payload: dict) -> dict:
                 weight_override=override, use_override=use_override,
                 stop_loss=stop_loss, take_profit=take_profit,
                 industry_idx=industry_idx, industry_cap=industry_cap, n_industries=n_industries,
+                min_hold_days=min_hold_days, turnover_cap=turnover_cap,
             )
             m = sim["metrics"]
             cells.append({
@@ -1394,6 +1407,7 @@ def batch_backtest(payload: dict) -> dict:
     stop_loss = max(0.0, min(float(payload.get("stop_loss_pct") or 0), 50)) / 100.0
     take_profit = max(0.0, min(float(payload.get("take_profit_pct") or 0), 200)) / 100.0
     industry_idx, industry_cap, n_industries = _industry_cap_args(payload, data)
+    min_hold_days, turnover_cap = _trade_friction_args(payload)
     buy_block = sell_block = None
     if trade_constraints:
         rets = data["returns"]
@@ -1425,6 +1439,7 @@ def batch_backtest(payload: dict) -> dict:
                 weight_override=override, use_override=use_override,
                 stop_loss=stop_loss, take_profit=take_profit,
                 industry_idx=industry_idx, industry_cap=industry_cap, n_industries=n_industries,
+                min_hold_days=min_hold_days, turnover_cap=turnover_cap,
             )
             stats = analysis.quick_ic(score, data["close"], valid, 5)
         except Exception:
@@ -1496,6 +1511,7 @@ def cost_sensitivity(payload: dict) -> dict:
             buy_block=buy_block, sell_block=sell_block, constraints=trade_constraints,
             stop_loss=stop_loss, take_profit=take_profit,
             industry_idx=industry_idx, industry_cap=industry_cap, n_industries=n_industries,
+            min_hold_days=min_hold_days, turnover_cap=turnover_cap,
         )
         m = sim["metrics"]
         items.append({
