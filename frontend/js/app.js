@@ -2524,6 +2524,9 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
         })),
         logic: $("#scrLogic").value,
         sort_by: $("#scrSort").value || "score",
+        confirm_days: Number($("#scrConfirmDays").value) || 0,
+        confirm_min: Number($("#scrConfirmMin").value) || 0,
+        industry_limit: Number($("#scrIndustryLimit").value) || 0,
       };
       const res = await api("/api/screener", { method: "POST", body: payload });
       state.screenerResult = res;
@@ -2654,13 +2657,17 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
     const indText = indTop.slice(0, 4).map(([k, v]) => `${k} ${v}`).join(" · ") +
       (indTop.length > 4 ? ` · 其他 ${indTop.length - 4} 个行业` : "");
     $("#scrMeta").textContent = `${res.as_of} · 股票池 ${res.universe_size} 只 · 命中 ${res.count} 只 · 显示 ${res.returned} 只 · 逻辑${res.logic === "or" ? "或" : "且"}` +
+      (res.confirm ? ` · 确认 ${res.confirm.min}/${res.confirm.days} 日` : "") +
+      (res.industry_limit > 0 ? ` · 每行业≤${res.industry_limit} 只` : "") +
       (indText ? ` · ${indText}` : "");
+    const extra = res.confirm ? 1 : 0;
     $("#scrHead").innerHTML = `<tr><th>代码</th><th>名称</th><th>行业</th>` +
       labels.map((l) => `<th style="text-align:right">${esc(l)}</th>`).join("") +
-      `<th style="text-align:right">综合分</th><th style="text-align:right">最新价</th><th style="text-align:right">涨跌幅</th></tr>`;
+      `<th style="text-align:right">综合分</th><th style="text-align:right">最新价</th><th style="text-align:right">涨跌幅</th>` +
+      (extra ? `<th style="text-align:right">确认</th>` : "") + `</tr>`;
     const body = $("#scrBody");
     if (!res.items.length) {
-      body.innerHTML = `<tr><td colspan="${labels.length + 6}" style="text-align:center;color:var(--faint);padding:30px">没有股票满足全部条件</td></tr>`;
+      body.innerHTML = `<tr><td colspan="${labels.length + 6 + extra}" style="text-align:center;color:var(--faint);padding:30px">没有股票满足全部条件</td></tr>`;
       return;
     }
     body.innerHTML = res.items.map((it) => `<tr style="cursor:default">
@@ -2671,6 +2678,7 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
       <td style="text-align:right" class="num-mono">${fmtNum(it.score, 2)}</td>
       <td style="text-align:right" class="num-mono">${it.close == null ? "—" : it.close.toFixed(2)}</td>
       <td style="text-align:right" class="num-mono ${it.change_pct > 0 ? "up" : it.change_pct < 0 ? "down" : ""}">${it.change_pct == null ? "—" : it.change_pct.toFixed(2) + "%"}</td>
+      ${extra ? `<td style="text-align:right" class="num-mono">${it.hit_days == null ? "—" : it.hit_days + "/" + res.confirm.days}</td>` : ""}
     </tr>`).join("");
   }
 
@@ -2719,6 +2727,9 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
         industries: Array.from($("#scrIndustries").selectedOptions).map((o) => o.value),
       },
       limit: Number($("#scrLimit").value) || 50,
+      confirmDays: Number($("#scrConfirmDays").value) || 0,
+      confirmMin: Number($("#scrConfirmMin").value) || 0,
+      industryLimit: Number($("#scrIndustryLimit").value) || 0,
       logic: $("#scrLogic").value,
       sortBy: $("#scrSort").value || "score",
     });
@@ -2750,6 +2761,9 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
       const wanted = new Set(f.industries || []);
       $$("#scrIndustries option").forEach((o) => { o.selected = wanted.has(o.value); });
       $("#scrLimit").value = s.limit || 50;
+      $("#scrConfirmDays").value = s.confirmDays || 0;
+      $("#scrConfirmMin").value = s.confirmMin || 0;
+      $("#scrIndustryLimit").value = s.industryLimit || 0;
       $("#scrLogic").value = s.logic || "and";
       renderScreenerConds();
       if (s.sortBy) $("#scrSort").value = s.sortBy;
