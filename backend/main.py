@@ -32,6 +32,8 @@ def _startup() -> None:
     database.init_db()
     if database.stats()["stock_count"] == 0:
         threading.Thread(target=_seed_demo, daemon=True).start()
+    else:
+        threading.Thread(target=services.ensure_indices, daemon=True).start()
 
 
 def _seed_demo() -> None:
@@ -100,11 +102,78 @@ def stock_bars(code: str, start: str | None = None, end: str | None = None) -> d
     return data
 
 
+@app.get("/api/indices")
+def indices() -> dict:
+    return {"items": database.list_indices()}
+
+
+@app.get("/api/data/quality")
+def data_quality() -> dict:
+    return database.data_quality()
+
+
+@app.get("/api/universes")
+def universes() -> dict:
+    return {"items": database.list_universes()}
+
+
+@app.post("/api/universes")
+def save_universe(payload: dict = Body(...)) -> dict:
+    name = (payload.get("name") or "").strip()
+    codes = payload.get("codes") or []
+    if not name:
+        raise HTTPException(status_code=400, detail="股票池名称不能为空")
+    if not isinstance(codes, list) or not codes:
+        raise HTTPException(status_code=400, detail="股票池不能为空")
+    return database.save_universe(name, [str(c) for c in codes])
+
+
+@app.delete("/api/universes/{universe_id}")
+def delete_universe(universe_id: int) -> dict:
+    database.delete_universe(universe_id)
+    return {"ok": True}
+
+
+@app.get("/api/screen-schemes")
+def screen_schemes() -> dict:
+    return {"items": database.list_screen_schemes()}
+
+
+@app.post("/api/screen-schemes")
+def save_screen_scheme(payload: dict = Body(...)) -> dict:
+    name = (payload.get("name") or "").strip()
+    config = payload.get("config")
+    if not name:
+        raise HTTPException(status_code=400, detail="方案名称不能为空")
+    if not isinstance(config, dict) or not config:
+        raise HTTPException(status_code=400, detail="方案内容不能为空")
+    return database.save_screen_scheme(name, config)
+
+
+@app.delete("/api/screen-schemes/{scheme_id}")
+def delete_screen_scheme(scheme_id: int) -> dict:
+    database.delete_screen_scheme(scheme_id)
+    return {"ok": True}
+
+
 @app.get("/api/factors")
 def factors() -> dict:
     from .factors.builtin import all_factors
     custom = [{**f, "is_custom": True, "label": f["name"]} for f in database.list_factors()]
     return {"items": all_factors() + custom}
+
+
+@app.get("/api/factors/export")
+def export_factors() -> dict:
+    return services.export_factors()
+
+
+@app.post("/api/factors/import")
+def import_factors(payload: dict = Body(...)) -> dict:
+    try:
+        return services.import_factors(payload)
+    except (FactorError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/factors")
@@ -132,6 +201,28 @@ def delete_factor(factor_id: int) -> dict:
     return {"ok": True}
 
 
+@app.put("/api/factors/{factor_id}")
+def update_factor(factor_id: int, payload: dict = Body(...)) -> dict:
+    name = (payload.get("name") or "").strip()
+    expression = (payload.get("expression") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="因子名称不能为空")
+    try:
+        from .factors.engine import validate
+        validate(expression)
+    except FactorError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if any(f["name"] == name and f["id"] != factor_id for f in database.list_factors()):
+        raise HTTPException(status_code=400, detail="因子名称已存在")
+    updated = database.update_factor(
+        factor_id, name, expression, payload.get("description", ""),
+        int(payload.get("direction", 1)),
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="因子不存在")
+    return updated
+
+
 @app.post("/api/factors/preview")
 def factor_preview(payload: dict = Body(...)) -> dict:
     try:
@@ -148,6 +239,130 @@ def factor_series(payload: dict = Body(...)) -> dict:
         return services.get_factor_series(payload)
     except (FactorError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/factors/correlation")
+def factor_correlation(payload: dict = Body(...)) -> dict:
+    try:
+        return services.factor_correlation(payload)
+    except (FactorError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/factors/select")
+def select_factors(payload: dict = Body(...)) -> dict:
+    try:
+        return services.select_factors(payload)
+    except (FactorError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=f"因子筛选失败：{exc}") from exc
+
+
+@app.post("/api/factors/scan")
+def factor_scan(payload: dict = Body(...)) -> dict:
+    try:
+        return services.factor_scan(payload)
+    except (FactorError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=f"参数扫描失败：{exc}") from exc
+
+
+@app.post("/api/factors/mine")
+def mine_factors(payload: dict = Body(...)) -> dict:
+    try:
+        return services.mine_factors(payload)
+    except (FactorError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=f"因子挖掘失败：{exc}") from exc
+
+
+@app.post("/api/signal")
+def latest_signal(payload: dict = Body(...)) -> dict:
+    try:
+        return services.latest_signal(payload)
+    except (FactorError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/screener")
+def screener(payload: dict = Body(...)) -> dict:
+    try:
+        return services.screen_stocks(payload)
+    except (FactorError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/screener/history")
+def screener_history(payload: dict = Body(...)) -> dict:
+    try:
+        return services.screen_history(payload)
+    except (FactorError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/portfolio/combine")
+def combine_portfolios(payload: dict = Body(...)) -> dict:
+    try:
+        return services.combine_portfolios(payload)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/backtest/optimize")
+def optimize_backtest(payload: dict = Body(...)) -> dict:
+    try:
+        return services.optimize_backtest(payload)
+    except (FactorError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"参数扫描失败：{exc}") from exc
+
+
+@app.post("/api/backtest/optimize-weights")
+def optimize_factor_weights(payload: dict = Body(...)) -> dict:
+    try:
+        return services.optimize_factor_weights(payload)
+    except (FactorError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=f"因子权重优化失败：{exc}") from exc
+
+
+@app.post("/api/backtest/batch")
+def batch_backtest(payload: dict = Body(...)) -> dict:
+    try:
+        return services.batch_backtest(payload)
+    except (FactorError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"批量评测失败：{exc}") from exc
+
+
+@app.post("/api/backtest/cost-sensitivity")
+def cost_sensitivity(payload: dict = Body(...)) -> dict:
+    try:
+        return services.cost_sensitivity(payload)
+    except (FactorError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=f"成本敏感性失败：{exc}") from exc
+
+
+@app.post("/api/backtest/walk-forward")
+def walk_forward(payload: dict = Body(...)) -> dict:
+    try:
+        return services.walk_forward(payload)
+    except (FactorError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=f"滚动验证失败：{exc}") from exc
 
 
 @app.post("/api/backtest")
@@ -173,3 +388,10 @@ def backtest_detail(bt_id: int) -> dict:
     if item is None:
         raise HTTPException(status_code=404, detail="回测记录不存在")
     return item
+
+
+@app.delete("/api/backtests/{bt_id}")
+def remove_backtest(bt_id: int) -> dict:
+    if not database.delete_backtest(bt_id):
+        raise HTTPException(status_code=404, detail="回测记录不存在")
+    return {"ok": True, "id": bt_id}

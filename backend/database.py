@@ -58,6 +58,33 @@ CREATE TABLE IF NOT EXISTS meta (
     key    TEXT PRIMARY KEY,
     value  TEXT
 );
+
+CREATE TABLE IF NOT EXISTS indices (
+    code       TEXT PRIMARY KEY,
+    name       TEXT,
+    updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS index_bars (
+    code  TEXT NOT NULL,
+    date  TEXT NOT NULL,
+    close REAL,
+    PRIMARY KEY (code, date)
+);
+
+CREATE TABLE IF NOT EXISTS universes (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL UNIQUE,
+    codes      TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS screen_schemes (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL UNIQUE,
+    config     TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 """
 
 
@@ -110,6 +137,169 @@ def clear_market_data() -> None:
     with _write_lock, get_conn() as conn:
         conn.execute("DELETE FROM daily_bars")
         conn.execute("DELETE FROM stocks")
+        conn.execute("DELETE FROM index_bars")
+        conn.execute("DELETE FROM indices")
+
+
+def upsert_indices(rows: Iterable[dict[str, Any]]) -> None:
+    values = [(r["code"], r.get("name", r["code"]), _now()) for r in rows]
+    if not values:
+        return
+    with _write_lock, get_conn() as conn:
+        conn.executemany(
+            """INSERT INTO indices(code,name,updated_at) VALUES(?,?,?)
+               ON CONFLICT(code) DO UPDATE SET name=excluded.name,
+               updated_at=excluded.updated_at""",
+            values,
+        )
+
+
+def insert_index_bars(rows: Iterable[tuple]) -> int:
+    rows = list(rows)
+    if not rows:
+        return 0
+    with _write_lock, get_conn() as conn:
+        conn.executemany(
+            "INSERT OR REPLACE INTO index_bars(code,date,close) VALUES(?,?,?)", rows
+        )
+    return len(rows)
+
+
+def list_indices() -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT i.code, i.name, MIN(b.date) AS start, MAX(b.date) AS end,
+                      COUNT(b.date) AS count
+               FROM indices i LEFT JOIN index_bars b ON b.code = i.code
+               GROUP BY i.code, i.name ORDER BY i.code"""
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def count_index_bars() -> int:
+    with get_conn() as conn:
+        return conn.execute("SELECT COUNT(*) c FROM index_bars").fetchone()["c"]
+
+
+def get_index_bars(code: str, start: str, end: str) -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT date,close FROM index_bars WHERE code=? AND date BETWEEN ? AND ? ORDER BY date",
+            (code, start, end),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_universes() -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id,name,codes,created_at FROM universes ORDER BY id DESC"
+        ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["codes"] = json.loads(d["codes"])
+        except json.JSONDecodeError:
+            d["codes"] = []
+        d["count"] = len(d["codes"])
+        out.append(d)
+    return out
+
+
+def save_universe(name: str, codes: list[str]) -> dict:
+    payload = json.dumps(codes, ensure_ascii=False)
+    with _write_lock, get_conn() as conn:
+        conn.execute(
+            """INSERT INTO universes(name,codes,created_at) VALUES(?,?,?)
+               ON CONFLICT(name) DO UPDATE SET codes=excluded.codes,
+               created_at=excluded.created_at""",
+            (name, payload, _now()),
+        )
+        row = conn.execute(
+            "SELECT id,name,codes,created_at FROM universes WHERE name=?", (name,)
+        ).fetchone()
+    d = dict(row)
+    d["codes"] = codes
+    d["count"] = len(codes)
+    return d
+
+
+def delete_universe(universe_id: int) -> None:
+    with _write_lock, get_conn() as conn:
+        conn.execute("DELETE FROM universes WHERE id=?", (universe_id,))
+
+
+def list_screen_schemes() -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id,name,config,created_at FROM screen_schemes ORDER BY id DESC"
+        ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["config"] = json.loads(d["config"])
+        except json.JSONDecodeError:
+            d["config"] = {}
+        out.append(d)
+    return out
+
+
+def save_screen_scheme(name: str, config: dict[str, Any]) -> dict[str, Any]:
+    payload = json.dumps(config, ensure_ascii=False)
+    with _write_lock, get_conn() as conn:
+        conn.execute(
+            """INSERT INTO screen_schemes(name,config,created_at) VALUES(?,?,?)
+               ON CONFLICT(name) DO UPDATE SET config=excluded.config,
+               created_at=excluded.created_at""",
+            (name, payload, _now()),
+        )
+        row = conn.execute(
+            "SELECT id,name,config,created_at FROM screen_schemes WHERE name=?", (name,)
+        ).fetchone()
+    d = dict(row)
+    d["config"] = config
+    return d
+
+
+def delete_screen_scheme(scheme_id: int) -> None:
+    with _write_lock, get_conn() as conn:
+        conn.execute("DELETE FROM screen_schemes WHERE id=?", (scheme_id,))
+
+
+def data_quality() -> dict[str, Any]:
+    with get_conn() as conn:
+        days = conn.execute("SELECT COUNT(DISTINCT date) c FROM daily_bars").fetchone()["c"]
+        stocks = conn.execute("SELECT COUNT(*) c FROM stocks").fetchone()["c"]
+        row = conn.execute(
+            """SELECT COUNT(*) total,
+                      SUM(CASE WHEN close IS NULL OR close <= 0 THEN 1 ELSE 0 END) bad_close,
+                      SUM(CASE WHEN volume IS NULL OR volume <= 0 THEN 1 ELSE 0 END) zero_vol,
+                      SUM(CASE WHEN amount IS NULL OR amount <= 0 THEN 1 ELSE 0 END) bad_amount
+               FROM daily_bars"""
+        ).fetchone()
+        per_stock = conn.execute(
+            "SELECT MIN(c) low, MAX(c) high, AVG(c) avg FROM "
+            "(SELECT code, COUNT(*) c FROM daily_bars GROUP BY code)"
+        ).fetchone()
+        indices = conn.execute("SELECT COUNT(*) c FROM index_bars").fetchone()["c"]
+    expected = max(days * stocks, 1)
+    return {
+        "trading_days": days,
+        "stocks": stocks,
+        "rows": row["total"] or 0,
+        "expected_rows": expected,
+        "coverage": round((row["total"] or 0) / expected, 4),
+        "missing_rows": max(expected - (row["total"] or 0), 0),
+        "bad_close": row["bad_close"] or 0,
+        "zero_volume": row["zero_vol"] or 0,
+        "bad_amount": row["bad_amount"] or 0,
+        "min_bars_per_stock": per_stock["low"] or 0,
+        "max_bars_per_stock": per_stock["high"] or 0,
+        "avg_bars_per_stock": round(per_stock["avg"] or 0, 1),
+        "index_rows": indices,
+    }
 
 
 def set_meta(key: str, value: Any) -> None:
@@ -225,6 +415,21 @@ def get_stock_names(codes: list[str]) -> dict[str, str]:
     return {r["code"]: r["name"] for r in rows}
 
 
+def get_stock_meta(codes: list[str]) -> dict[str, dict[str, str]]:
+    """返回 code -> {name, industry} 映射。"""
+    if not codes:
+        return {}
+    placeholders = ",".join("?" for _ in codes)
+    with get_conn() as conn:
+        rows = conn.execute(
+            f"SELECT code,name,industry FROM stocks WHERE code IN ({placeholders})", codes
+        ).fetchall()
+    return {
+        r["code"]: {"name": r["name"] or r["code"], "industry": r["industry"] or "未分类"}
+        for r in rows
+    }
+
+
 def list_factors() -> list[dict[str, Any]]:
     with get_conn() as conn:
         rows = conn.execute("SELECT * FROM custom_factors ORDER BY id").fetchall()
@@ -246,6 +451,22 @@ def create_factor(name: str, expression: str, description: str, direction: int) 
 def delete_factor(factor_id: int) -> None:
     with _write_lock, get_conn() as conn:
         conn.execute("DELETE FROM custom_factors WHERE id=?", (factor_id,))
+
+
+def update_factor(factor_id: int, name: str, expression: str,
+                  description: str, direction: int) -> dict | None:
+    with _write_lock, get_conn() as conn:
+        cur = conn.execute(
+            """UPDATE custom_factors SET name=?, expression=?, description=?, direction=?
+               WHERE id=?""",
+            (name, expression, description, direction, factor_id),
+        )
+        if cur.rowcount == 0:
+            return None
+        row = conn.execute(
+            "SELECT * FROM custom_factors WHERE id=?", (factor_id,)
+        ).fetchone()
+    return dict(row) if row else None
 
 
 def save_backtest(name: str, config: dict, metrics: dict, result: dict) -> int:
@@ -284,6 +505,12 @@ def get_backtest(bt_id: int) -> dict[str, Any] | None:
     d["metrics"] = json.loads(d["metrics"])
     d["result"] = json.loads(d["result"])
     return d
+
+
+def delete_backtest(bt_id: int) -> bool:
+    with _write_lock, get_conn() as conn:
+        cur = conn.execute("DELETE FROM backtests WHERE id=?", (bt_id,))
+        return cur.rowcount > 0
 
 
 def _now() -> str:

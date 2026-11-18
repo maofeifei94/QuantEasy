@@ -359,6 +359,21 @@
         ctx.fillRect(x - barW / 2, bodyTop, barW, bodyH);
       }
 
+      // 均线叠加
+      (cfg.ma || []).forEach((line) => {
+        ctx.beginPath();
+        ctx.strokeStyle = line.color;
+        ctx.lineWidth = 1.2;
+        ctx.setLineDash([]);
+        let started = false;
+        line.data.forEach((v, i) => {
+          if (v === null || !isFinite(v)) { started = false; return; }
+          if (!started) { ctx.moveTo(xAt(i), yAt(v)); started = true; }
+          else ctx.lineTo(xAt(i), yAt(v));
+        });
+        ctx.stroke();
+      });
+
       // 成交量
       const volTop = pad.t + priceH + 12;
       const vBase = h - pad.b;

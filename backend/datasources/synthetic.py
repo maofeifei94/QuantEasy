@@ -10,6 +10,8 @@ from typing import Callable
 
 import numpy as np
 
+from ..indices import proxy_indices
+
 INDUSTRIES = [
     ("半导体", 0.00045, 0.026),
     ("新能源", 0.00040, 0.024),
@@ -59,11 +61,13 @@ def generate(
     n_stocks: int = 150,
     seed: int = 7,
     progress: Callable[[float, str], None] | None = None,
-) -> tuple[list[dict], list[tuple]]:
+) -> tuple[list[dict], list[tuple], list[dict]]:
     rng = np.random.default_rng(seed)
     dates = _trading_days(start, end)
     names = _stock_names(n_stocks, rng)
     T = len(dates)
+    close_rows: list[np.ndarray] = []
+    vol_rows: list[np.ndarray] = []
 
     # 市场因子：慢牛 + 两段回撤，波动聚集
     vol = np.abs(rng.normal(0.010, 0.003, T)) + 0.004
@@ -102,6 +106,8 @@ def generate(
             "market": "SH" if code.startswith("6") else "SZ",
             "list_date": "2015-06-01",
         })
+        close_rows.append(close)
+        vol_rows.append(volume)
         for t in range(T):
             bars.append((
                 code, dates[t],
@@ -112,4 +118,9 @@ def generate(
         if progress and (i % 15 == 0 or i == n_stocks - 1):
             progress((i + 1) / n_stocks, f"生成合成行情 {i + 1}/{n_stocks}")
 
-    return stocks, bars
+    indices = proxy_indices(
+        np.vstack(close_rows).T,
+        dates,
+        np.vstack(vol_rows).T,
+    )
+    return stocks, bars, indices

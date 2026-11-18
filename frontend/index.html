@@ -32,6 +32,10 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19V5M4 19h16"/><path d="M7 15l4-6 3 4 4-7"/><circle cx="18" cy="6" r="1.6" fill="currentColor" stroke="none"/></svg>
         <span>因子实验室</span>
       </button>
+      <button class="nav-item" data-page="screener">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 5h16l-6 7v6l-4 2v-8L4 5z"/></svg>
+        <span>智能选股</span>
+      </button>
       <button class="nav-item" data-page="backtest">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 17l5-6 4 3 5-7 4 4"/><path d="M3 21h18"/><circle cx="8" cy="11" r="1.3" fill="currentColor" stroke="none"/></svg>
         <span>回测引擎</span>
@@ -69,11 +73,11 @@
         <div class="hero-copy">
           <div class="hero-tag">
             <span class="chip green">JAX 向量化</span>
-            <span class="chip blue">SQLite 本地仓</span>
+            <span class="chip blue">多因子 · 行业中性</span>
             <span class="chip amber">miniQMT</span>
           </div>
           <h3>A股多因子研究<br><em>从因子到回测的一站式引擎</em></h3>
-          <p>内置 14 个横截面与时序因子，支持自定义表达式快速构造 Alpha，JAX 加速的全市场向量化回测，数秒内得到净值、IC 与归因结果。</p>
+          <p>内置 14 个常用因子，支持多因子加权、MAD 去极值与行业中性化，股票池过滤后可一键完成向量化回测、参数扫描与绩效归因。</p>
           <div class="hero-actions">
             <button class="btn primary" data-goto="factors">进入因子实验室</button>
             <button class="btn ghost" data-goto="backtest">运行一次回测 →</button>
@@ -165,7 +169,10 @@
           </div>
         </div>
         <div class="panel">
-          <div class="panel-head"><div class="panel-title"><span class="num">INFO</span>数据概览</div></div>
+          <div class="panel-head">
+            <div class="panel-title"><span class="num">INFO</span>数据概览</div>
+            <button class="btn sm" id="qualityBtn">质量检测</button>
+          </div>
           <div class="stat-line"><span class="k">股票数量</span><span class="v" id="dsStocks">—</span></div>
           <div class="stat-line"><span class="k">日线记录</span><span class="v" id="dsBars">—</span></div>
           <div class="stat-line"><span class="k">数据区间</span><span class="v" id="dsRange" style="font-size:11px">—</span></div>
@@ -205,7 +212,17 @@
         <div class="panel" style="padding:14px">
           <div style="display:flex;justify-content:space-between;align-items:center;padding:2px 4px 10px">
             <div class="panel-title" style="font-size:13.5px">因子库</div>
-            <button class="btn sm" id="newFactorBtn">＋ 新建</button>
+            <div class="form-row" style="gap:6px">
+              <button class="btn sm" id="factoryBtn">工厂</button>
+              <button class="btn sm" id="corrBtn">相关性</button>
+              <button class="btn sm" id="exportFactorsBtn" title="导出自定义因子为 JSON">导出</button>
+              <button class="btn sm" id="importFactorsBtn" title="从 JSON 导入自定义因子">导入</button>
+              <button class="btn sm" id="newFactorBtn">＋ 新建</button>
+              <input type="file" id="importFactorsFile" accept=".json,application/json" style="display:none">
+            </div>
+          </div>
+          <div style="padding:0 4px 8px">
+            <input type="text" id="factorSearch" placeholder="搜索因子名称或表达式" style="font-size:11.5px;padding:6px 9px">
           </div>
           <div class="factor-list" id="factorList"></div>
         </div>
@@ -223,6 +240,11 @@
                   <option value="5" selected>未来 5 日</option>
                   <option value="10">未来 10 日</option>
                   <option value="20">未来 20 日</option>
+                </select>
+                <select id="previewGroups" style="width:auto">
+                  <option value="3">分 3 组</option>
+                  <option value="5" selected>分 5 组</option>
+                  <option value="10">分 10 组</option>
                 </select>
                 <button class="btn primary" id="previewBtn">检验因子</button>
               </div>
@@ -249,11 +271,48 @@
         <div class="panel bt-form">
           <div class="panel-head" style="margin-bottom:12px">
             <div class="panel-title"><span class="num">CFG</span>回测配置</div>
+            <div class="form-row" style="gap:6px">
+              <button class="btn sm" id="saveConfigBtn">保存</button>
+              <button class="btn sm" id="loadConfigBtn">载入</button>
+            </div>
+          </div>
+          <div class="tpl-row" id="tplRow">
+            <span class="tpl-label">模板</span>
+            <button type="button" class="tpl-btn" data-tpl="momentum">动量趋势</button>
+            <button type="button" class="tpl-btn" data-tpl="lowvol">低波防御</button>
+            <button type="button" class="tpl-btn" data-tpl="reversal">短期反转</button>
+            <button type="button" class="tpl-btn" data-tpl="balanced">多因子均衡</button>
           </div>
 
           <div class="field">
-            <label>因子</label>
-            <select id="btFactor"></select>
+            <label>因子组合 <span class="hint" id="comboCount">多因子加权合成</span></label>
+            <div class="combo-list" id="comboList"></div>
+            <div class="combo-add">
+              <select id="addFactorSelect"></select>
+              <button class="btn sm" id="addFactorBtn">＋ 添加</button>
+              <button class="btn sm" id="icWeightBtn" title="按各因子 ICIR 自动分配权重">IC 加权</button>
+              <button class="btn sm" id="factorSelectBtn" title="按 ICIR 与相关性筛选低冗余因子">因子筛选</button>
+              <button class="btn sm" id="saveComboFactorBtn" title="将当前加权组合保存为可复用因子">另存为因子</button>
+            </div>
+            <div class="form-row" style="margin-top:8px;gap:10px;align-items:center">
+              <label class="switch" title="按滚动 ICIR 动态调整因子权重（仅多因子）">
+                <input type="checkbox" id="btFactorTiming">
+                <span class="track"></span>
+                <span>因子择时</span>
+              </label>
+              <span class="hint">滚动 ICIR 窗口</span>
+              <input type="number" id="btTimingLookback" value="60" min="10" max="250" step="10" style="width:76px">
+              <span class="hint">交易日（5 日 IC，滞后一期防未来函数）</span>
+            </div>
+          </div>
+          <div class="field" style="margin-top:12px">
+            <label>因子预处理</label>
+            <div class="switch-row">
+              <label class="switch"><input type="checkbox" id="ppWinsor"><span class="track"></span><span>MAD 去极值</span></label>
+              <label class="switch"><input type="checkbox" id="ppNeutral"><span class="track"></span><span>行业中性</span></label>
+              <label class="switch"><input type="checkbox" id="ppStd" checked><span class="track"></span><span>标准化</span></label>
+              <label class="switch"><input type="checkbox" id="ppOrtho"><span class="track"></span><span>风格正交</span></label>
+            </div>
           </div>
           <div class="form-grid">
             <div class="field">
@@ -273,6 +332,9 @@
                 <span style="display:flex;gap:8px">
                   <a href="javascript:void 0" id="universeAll" style="color:var(--green);text-decoration:none">全选</a>
                   <a href="javascript:void 0" id="universeNone" style="color:var(--faint);text-decoration:none">清空</a>
+                  <span style="color:var(--border)">|</span>
+                  <a href="javascript:void 0" id="saveUniverseBtn" style="color:var(--green);text-decoration:none">保存</a>
+                  <a href="javascript:void 0" id="loadUniverseBtn" style="color:var(--blue);text-decoration:none">载入</a>
                 </span>
               </div>
               <div class="up-list" id="universeList"></div>
@@ -280,8 +342,39 @@
           </div>
 
           <div class="form-divider"></div>
+          <div class="panel-sub" style="margin-bottom:8px">股票池过滤</div>
           <div class="form-grid">
             <div class="field">
+              <label>最小日均成交额 <span class="hint">亿元</span></label>
+              <input type="number" id="filterAmount" value="0" min="0" step="0.5">
+            </div>
+            <div class="field">
+              <label>最少上市天数</label>
+              <input type="number" id="filterDays" value="0" min="0" step="20">
+            </div>
+            <div class="field">
+              <label>行业过滤 <span class="hint">不选=全部</span></label>
+              <select id="filterIndustries" multiple size="3" style="height:auto;min-height:64px"></select>
+            </div>
+          </div>
+          <div class="switch-row" style="margin-top:10px">
+            <label class="switch"><input type="checkbox" id="filterStar" checked><span class="track"></span><span>剔除科创板</span></label>
+            <label class="switch"><input type="checkbox" id="filterBJ" checked><span class="track"></span><span>剔除北交所</span></label>
+            <label class="switch"><input type="checkbox" id="filterLimitUp"><span class="track"></span><span>过滤当日涨停</span></label>
+            <label class="switch"><input type="checkbox" id="filterTrade"><span class="track"></span><span>涨跌停/停牌限制</span></label>
+          </div>
+
+          <div class="form-divider"></div>
+          <div class="form-grid">
+            <div class="field">
+              <label>调仓方式</label>
+              <select id="btRebalanceMode">
+                <option value="interval">按交易日间隔</option>
+                <option value="weekly">每周固定星期</option>
+                <option value="monthly">每月第 N 个交易日</option>
+              </select>
+            </div>
+            <div class="field" id="rbIntervalWrap">
               <label>调仓周期 <span class="hint">交易日</span></label>
               <select id="btRebalance">
                 <option value="1">每日</option>
@@ -289,6 +382,20 @@
                 <option value="10" selected>双周</option>
                 <option value="21">每月</option>
               </select>
+            </div>
+            <div class="field" id="rbWeekdayWrap" style="display:none">
+              <label>调仓星期</label>
+              <select id="btRebalanceWeekday">
+                <option value="0">周一</option>
+                <option value="1">周二</option>
+                <option value="2">周三</option>
+                <option value="3">周四</option>
+                <option value="4">周五</option>
+              </select>
+            </div>
+            <div class="field" id="rbMonthWrap" style="display:none">
+              <label>每月第几个交易日</label>
+              <input type="number" id="btRebalanceMonthDay" value="1" min="1" max="10">
             </div>
             <div class="field">
               <label>持仓数量 <span class="hint">0=按比例</span></label>
@@ -299,8 +406,113 @@
               <input type="number" id="btTopPct" value="0.2" min="0.05" max="1" step="0.05">
             </div>
             <div class="field">
-              <label>单边成本 <span class="hint">bps</span></label>
-              <input type="number" id="btCost" value="15" min="0" max="100">
+              <label>佣金 <span class="hint">bps/边</span></label>
+              <input type="number" id="btCommission" value="2.5" min="0" max="100" step="0.5">
+            </div>
+          </div>
+          <div class="form-grid">
+            <div class="field">
+              <label>印花税 <span class="hint">bps/卖出</span></label>
+              <input type="number" id="btStamp" value="5" min="0" max="100" step="0.5">
+            </div>
+            <div class="field">
+              <label>滑点 <span class="hint">bps/边</span></label>
+              <input type="number" id="btSlip" value="5" min="0" max="100" step="0.5">
+            </div>
+            <div class="field">
+              <label>权重方案</label>
+              <select id="btWeighting">
+                <option value="equal">等权</option>
+                <option value="score">因子得分加权</option>
+                <option value="inverse_vol">波动率倒数</option>
+                <option value="risk_parity">风险平价 (ERC)</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>单票上限 <span class="hint">%，0=不限</span></label>
+              <input type="number" id="btMaxWeight" value="0" min="0" max="100">
+            </div>
+          </div>
+          <div class="form-grid">
+            <div class="field">
+              <label>个股止损 <span class="hint">%，0=关闭</span></label>
+              <input type="number" id="btStopLoss" value="0" min="0" max="50" step="1">
+            </div>
+            <div class="field">
+              <label>个股止盈 <span class="hint">%，0=关闭</span></label>
+              <input type="number" id="btTakeProfit" value="0" min="0" max="200" step="5">
+            </div>
+            <div class="field">
+              <label>移动止损 <span class="hint">%，0=关闭</span></label>
+              <input type="number" id="btTrailingStop" value="0" min="0" max="50" step="1">
+            </div>
+            <div class="field">
+              <label>行业上限 <span class="hint">%，0=不限</span></label>
+              <input type="number" id="btIndustryCap" value="0" min="0" max="100" step="5">
+            </div>
+            <div class="field">
+              <label>最大仓位 <span class="hint">%，100=满仓</span></label>
+              <input type="number" id="btMaxPosition" value="100" min="5" max="100" step="5">
+            </div>
+            <div class="field">
+              <label>行业中性选股 <span class="hint">每行业取前 N 名，等权</span></label>
+              <div class="form-row" style="gap:6px;align-items:center">
+                <label class="switch"><input type="checkbox" id="btIndustryNeutral"><span class="track"></span><span>启用</span></label>
+                <input type="number" id="btIndustryNeutralN" value="2" min="1" max="20" step="1" style="width:66px">
+              </div>
+            </div>
+          </div>
+          <div class="form-grid">
+            <div class="field">
+              <label>最小持有期 <span class="hint">天，0=不限制</span></label>
+              <input type="number" id="btMinHold" value="0" min="0" max="120" step="1">
+            </div>
+            <div class="field">
+              <label>单次换手上限 <span class="hint">%，0=不限制</span></label>
+              <input type="number" id="btTurnoverCap" value="0" min="0" max="100" step="5">
+            </div>
+            <div class="field">
+              <label>调仓缓冲带 <span class="hint">%，0=不启用</span></label>
+              <input type="number" id="btRebalanceBand" value="0" min="0" max="50" step="0.5">
+            </div>
+            <div class="field">
+              <label>持仓权重 <span class="hint">调仓间隔内是否随价格漂移</span></label>
+              <label class="switch"><input type="checkbox" id="btWeightDrift" checked><span class="track"></span><span>按价格漂移</span></label>
+            </div>
+          </div>
+          <div class="form-grid">
+            <div class="field">
+              <label>目标年化波动 <span class="hint">%，0=不控制</span></label>
+              <input type="number" id="btVolTarget" value="0" min="0" max="100" step="5">
+            </div>
+            <div class="field">
+              <label>波动率估计窗口 <span class="hint">交易日</span></label>
+              <input type="number" id="btVolLookback" value="20" min="5" max="120" step="5">
+            </div>
+          </div>
+          <div class="form-grid">
+            <div class="field">
+              <label>业绩基准</label>
+              <select id="btBenchmark">
+                <option value="universe">股票池等权</option>
+                <option value="market">全市场等权</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>大盘择时</label>
+              <select id="btTiming">
+                <option value="none">关闭</option>
+                <option value="20">MA20 择时</option>
+                <option value="60">MA60 择时</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>样本外比例</label>
+              <select id="btOOS">
+                <option value="0">不拆分</option>
+                <option value="0.3">后 30% 样本外</option>
+                <option value="0.4">后 40% 样本外</option>
+              </select>
             </div>
           </div>
           <div class="form-row" style="margin-top:14px;justify-content:space-between">
@@ -309,7 +521,15 @@
               <span class="track"></span>
               <span>多空组合</span>
             </label>
-            <button class="btn primary" id="runBacktestBtn">运行回测</button>
+            <div class="form-row bt-actions">
+              <button class="btn" id="signalBtn">最新信号</button>
+              <button class="btn" id="batchBtn">批量评测</button>
+              <button class="btn" id="costBtn">成本敏感</button>
+              <button class="btn" id="wfBtn">滚动验证</button>
+              <button class="btn" id="optimizeBtn">参数扫描</button>
+              <button class="btn" id="weightOptBtn">权重优化</button>
+              <button class="btn primary" id="runBacktestBtn">运行回测</button>
+            </div>
           </div>
           <div class="panel-sub" id="btWarmupHint" style="margin-top:12px">因子前期需要预热窗口，回测会自动跳过缺失期。</div>
         </div>
@@ -326,6 +546,111 @@
       </div>
     </section>
 
+    <!-- ================= 智能选股 ================= -->
+    <section class="page" id="page-screener">
+      <div class="panel">
+        <div class="panel-head">
+          <div>
+            <div class="panel-title"><span class="num">SCREEN</span>多条件选股</div>
+            <div class="panel-sub">内置或自定义因子按排名/阈值组合筛选，条件之间为「且」关系</div>
+          </div>
+          <div class="form-row" style="gap:8px">
+            <button class="btn" id="scrHistory">历史检验</button>
+            <button class="btn primary" id="scrRun">开始选股</button>
+          </div>
+        </div>
+        <div class="form-grid">
+          <div class="field">
+            <label>选股日期 <span class="hint">留空=最新交易日</span></label>
+            <input type="date" id="scrDate">
+          </div>
+          <div class="field">
+            <label>最小成交额 <span class="hint">万元，0=不限</span></label>
+            <input type="number" id="scrAmount" value="0" min="0" step="100">
+          </div>
+          <div class="field">
+            <label>返回数量</label>
+            <input type="number" id="scrLimit" value="50" min="1" max="200">
+          </div>
+        </div>
+        <div class="form-grid" style="margin-top:12px">
+          <div class="field">
+            <label>选股方式</label>
+            <select id="scrMode">
+              <option value="conditions">条件筛选（满足全部 / 任一条件）</option>
+              <option value="score">综合分排序（按加权得分取前 N）</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-grid" style="margin-top:12px">
+          <div class="field">
+            <label>信号确认天数 <span class="hint">日，0=不确认</span></label>
+            <input type="number" id="scrConfirmDays" value="0" min="0" max="10" step="1">
+          </div>
+          <div class="field">
+            <label>最少满足天数 <span class="hint">近 M 日中至少 K 日</span></label>
+            <input type="number" id="scrConfirmMin" value="0" min="0" max="10" step="1">
+          </div>
+          <div class="field">
+            <label>每行业最多 <span class="hint">只，0=不限</span></label>
+            <input type="number" id="scrIndustryLimit" value="0" min="0" max="50" step="1">
+          </div>
+        </div>
+        <div class="form-row" style="margin-top:12px;gap:18px">
+          <label class="switch">
+            <input type="checkbox" id="scrStar" checked>
+            <span class="track"></span>
+            <span>排除科创板</span>
+          </label>
+          <label class="switch">
+            <input type="checkbox" id="scrBJ" checked>
+            <span class="track"></span>
+            <span>排除北交所</span>
+          </label>
+        </div>
+        <div class="form-grid" style="margin-top:12px">
+          <div class="field">
+            <label>行业过滤 <span class="hint">不选=全部，Ctrl 可多选</span></label>
+            <select id="scrIndustries" multiple size="3" style="height:auto;min-height:64px"></select>
+          </div>
+        </div>
+        <div id="scrConds" style="margin-top:14px;display:flex;flex-direction:column;gap:8px"></div>
+        <div class="form-row" style="margin-top:12px">
+          <button class="btn ghost sm" id="scrAdd">+ 添加条件</button>
+          <button class="btn ghost sm" id="scrSaveScheme">保存方案</button>
+          <button class="btn ghost sm" id="scrLoadScheme">载入方案</button>
+          <span class="panel-sub" style="margin:0 0 0 6px">条件逻辑</span>
+          <select id="scrLogic" style="padding:4px 8px;font-size:12px">
+            <option value="and">同时满足（且）</option>
+            <option value="or">满足任一（或）</option>
+          </select>
+          <span class="panel-sub" style="margin:0 0 0 6px">排序</span>
+          <select id="scrSort" style="padding:4px 8px;font-size:12px"></select>
+          <span class="panel-sub" style="margin:0">排名模式按当日因子值截面排序</span>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top:16px">
+        <div class="panel-head">
+          <div>
+            <div class="panel-title"><span class="num">RESULT</span>选股结果</div>
+            <div class="panel-sub" id="scrMeta">尚未运行</div>
+          </div>
+          <div class="form-row" style="gap:6px">
+            <button class="btn sm primary" id="scrBacktest">用结果回测</button>
+            <button class="btn sm" id="scrExport">导出 CSV</button>
+            <button class="btn sm" id="scrSave">保存为自选池</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead id="scrHead"></thead>
+            <tbody id="scrBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
     <!-- ================= 回测记录 ================= -->
     <section class="page" id="page-history">
       <div class="panel-head" style="margin-bottom:2px">
@@ -333,7 +658,18 @@
           <div class="panel-title">历史回测</div>
           <div class="panel-sub">所有回测结果均持久化在 SQLite（backtests 表）中</div>
         </div>
-        <button class="btn sm" id="refreshHistory">刷新</button>
+        <div class="form-row" style="gap:6px">
+          <input type="text" id="historySearch" placeholder="搜索名称" style="width:150px;font-size:12px;padding:6px 9px">
+          <button class="btn sm" id="strategyCombineBtn">策略组合</button>
+          <button class="btn sm" id="refreshHistory">刷新</button>
+        </div>
+      </div>
+      <div id="historyCompareBar" class="compare-bar" style="display:none">
+        <span id="compareHint">已选择 0 个回测</span>
+        <div class="form-row">
+          <button class="btn sm" id="clearCompare">清空</button>
+          <button class="btn sm primary" id="compareBtn">对比所选</button>
+        </div>
       </div>
       <div class="history-grid" id="historyGrid" style="margin-top:14px"></div>
     </section>

@@ -15,7 +15,36 @@ import numpy as np
 NEG_INF = -1e30
 
 
-@partial(jax.jit, static_argnames=("top_n", "long_short"))
+def _bucket_weights(mask, ranks, k, n_valid, weighting: str, vol, short: bool):
+    """在入选股票内分配权重：等权 / 得分加权 / 波动率倒数加权。"""
+    if weighting == "score":
+        if short:
+            pos = ranks - (n_valid[:, None] - k[:, None])
+        else:
+            pos = k[:, None] - ranks
+        w = jnp.where(mask, jnp.maximum(pos, 0.0), 0.0)
+    elif weighting == "inverse_vol":
+        w = jnp.where(mask, 1.0 / jnp.maximum(vol, 1e-4), 0.0)
+    else:
+        w = mask.astype(jnp.float64)
+    total = jnp.sum(w, axis=1, keepdims=True)
+    return w / jnp.maximum(total, 1e-12)
+
+
+def _apply_industry_cap(weights, industry_idx, industry_cap: float, n_industries: int):
+    """按行业总权重上限等比缩放，保持行业内个股相对权重。"""
+    if industry_cap <= 0 or n_industries <= 0:
+        return weights
+    groups = jnp.arange(n_industries)
+    onehot = (industry_idx[None, :] == groups[:, None]).astype(jnp.float64)
+    sums = weights @ onehot.T
+    scale = jnp.minimum(1.0, industry_cap / jnp.maximum(jnp.abs(sums), 1e-9))
+    stock_scale = jnp.take(scale, industry_idx, axis=1)
+    return weights * stock_scale
+
+
+@partial(jax.jit, static_argnames=("top_n", "long_short", "weighting", "max_weight",
+                                   "industry_cap", "n_industries", "position_cap"))
 def _target_weights(
     score: jnp.ndarray,
     valid: jnp.ndarray,
@@ -23,6 +52,14 @@ def _target_weights(
     top_frac: float,
     top_n: int,
     long_short: bool,
+    weighting: str,
+    max_weight: float,
+    vol: jnp.ndarray,
+    timing: jnp.ndarray,
+    industry_idx: jnp.ndarray,
+    industry_cap: float,
+    n_industries: int,
+    position_cap: float,
 ):
     T, N = score.shape
     clean = jnp.where(valid, jnp.nan_to_num(score, nan=NEG_INF, posinf=1e30, neginf=NEG_INF), NEG_INF)
@@ -37,19 +74,66 @@ def _target_weights(
     k = jnp.clip(k, 0.0, n_valid)
 
     long_mask = (ranks < k[:, None]) & valid
-    long_w = long_mask / jnp.maximum(jnp.sum(long_mask, axis=1, keepdims=True), 1.0)
+    long_w = _bucket_weights(long_mask, ranks, k, n_valid, weighting, vol, short=False)
+    weights = long_w
     if long_short:
         short_mask = (ranks >= (n_valid[:, None] - k[:, None])) & valid & ~long_mask
-        short_w = short_mask / jnp.maximum(jnp.sum(short_mask, axis=1, keepdims=True), 1.0)
+        short_w = _bucket_weights(short_mask, ranks, k, n_valid, weighting, vol, short=True)
         weights = long_w - short_w
-    else:
-        weights = long_w
 
-    target = jnp.where(rebalance[:, None], weights, 0.0)
+    if max_weight > 0:
+        cap = jnp.maximum(max_weight, 1.0 / jnp.maximum(k[:, None], 1.0))
+        for _ in range(4):
+            weights = jnp.where(valid, jnp.clip(weights, -cap, cap), 0.0)
+            net = jnp.sum(jnp.abs(weights), axis=1, keepdims=True)
+            weights = weights / jnp.maximum(net, 1e-12)
+
+    weights = _apply_industry_cap(weights, industry_idx, industry_cap, n_industries)
+
+    if position_cap > 0 and position_cap < 1.0:
+        gross = jnp.sum(jnp.abs(weights), axis=1, keepdims=True)
+        weights = weights * jnp.minimum(1.0, position_cap / jnp.maximum(gross, 1e-12))
+
+    target = jnp.where(rebalance[:, None], weights * timing[:, None], 0.0)
     return target
 
 
-@partial(jax.jit, static_argnames=("top_n", "long_short"))
+def _vol_target_scale(close: jnp.ndarray, target: jnp.ndarray,
+                      rebalance: jnp.ndarray, vol_target: float,
+                      lookback: int) -> jnp.ndarray:
+    """按目标年化波动率缩放仓位：用目标持仓的前向填充权重估计滚动已实现波动。"""
+    T, N = close.shape
+
+    def _fill(carry, x):
+        rb, w = x
+        new = jnp.where(rb, w, carry)
+        return new, new
+
+    _, held = jax.lax.scan(_fill, jnp.zeros(N, dtype=close.dtype), (rebalance, target))
+    prev = jnp.concatenate([close[:1], close[:-1]], axis=0)
+    rets = jnp.nan_to_num(close / jnp.maximum(prev, 1e-12) - 1.0, nan=0.0)
+    rets = jnp.clip(rets, -0.25, 0.25)
+    pnl = jnp.sum(held * rets, axis=1)
+
+    idx = jnp.arange(T)
+    start = jnp.maximum(idx - lookback + 1, 0)
+    c1 = jnp.concatenate([jnp.zeros((1,), dtype=pnl.dtype), jnp.cumsum(pnl)])
+    c2 = jnp.concatenate([jnp.zeros((1,), dtype=pnl.dtype), jnp.cumsum(pnl * pnl)])
+    s1 = c1[idx + 1] - c1[start]
+    s2 = c2[idx + 1] - c2[start]
+    cnt = (idx - start + 1).astype(pnl.dtype)
+    var = jnp.maximum(s2 / cnt - (s1 / cnt) ** 2, 0.0)
+    vol = jnp.sqrt(var) * jnp.sqrt(252.0)
+    scale = jnp.minimum(1.0, vol_target / jnp.maximum(vol, 1e-6))
+    return jnp.where(cnt >= 10.0, scale, 1.0)
+
+
+@partial(jax.jit, static_argnames=(
+    "top_n", "long_short", "weighting", "max_weight", "constraints",
+    "use_override", "stop_loss", "take_profit", "trailing_stop",
+    "industry_cap", "n_industries", "min_hold", "turnover_cap", "position_cap",
+    "vol_target", "vol_lookback", "rebalance_band", "weight_drift",
+))
 def _simulate(
     score: jnp.ndarray,
     close: jnp.ndarray,
@@ -59,26 +143,162 @@ def _simulate(
     top_n: int,
     long_short: bool,
     commission: float,
+    stamp_duty: float,
+    slippage: float,
+    weighting: str,
+    max_weight: float,
+    vol: jnp.ndarray,
+    timing: jnp.ndarray,
+    buy_block: jnp.ndarray,
+    sell_block: jnp.ndarray,
+    constraints: bool,
+    weight_override: jnp.ndarray,
+    use_override: bool,
+    stop_loss: float,
+    take_profit: float,
+    trailing_stop: float,
+    industry_idx: jnp.ndarray,
+    industry_cap: float,
+    n_industries: int,
+    min_hold: int,
+    turnover_cap: float,
+    position_cap: float,
+    vol_target: float,
+    vol_lookback: int,
+    rebalance_band: float,
+    weight_drift: bool,
 ):
     T, N = score.shape
-    target = _target_weights(score, valid, rebalance, top_frac, top_n, long_short)
+    if use_override:
+        capped = _apply_industry_cap(weight_override, industry_idx, industry_cap, n_industries)
+        if position_cap > 0 and position_cap < 1.0:
+            gross = jnp.sum(jnp.abs(capped), axis=1, keepdims=True)
+            capped = capped * jnp.minimum(1.0, position_cap / jnp.maximum(gross, 1e-12))
+        target = jnp.where(rebalance[:, None], capped * timing[:, None], 0.0)
+    else:
+        target = _target_weights(
+            score, valid, rebalance, top_frac, top_n, long_short,
+            weighting, max_weight, vol, timing,
+            industry_idx, industry_cap, n_industries, position_cap,
+        )
 
-    def fill(w_prev, inputs):
-        tgt, rb = inputs
-        w = jnp.where(rb, tgt, w_prev)
-        return w, w
+    if vol_target > 0:
+        scale = _vol_target_scale(close, target, rebalance, vol_target, vol_lookback)
+        target = target * scale[:, None]
 
-    _, W = jax.lax.scan(fill, jnp.zeros(N), (target, rebalance))
+    use_stop = stop_loss > 0 or take_profit > 0 or trailing_stop > 0
 
-    prev_c, next_c = close[:-1], close[1:]
-    rets = next_c / prev_c - 1.0
+    def fill(state, inputs):
+        w_prev, entry, age, peak = state
+        tgt, rb, bb, sb, px, rt = inputs
+        if use_stop:
+            held = w_prev > 1e-9
+            peak_upd = jnp.where(held, jnp.maximum(peak, px), 0.0)
+            has = held & (entry > 0) & (~sb)
+            ret = jnp.where(entry > 0, px / jnp.maximum(entry, 1e-9) - 1.0, 0.0)
+            trail_ret = jnp.where(peak_upd > 0, px / jnp.maximum(peak_upd, 1e-9) - 1.0, 0.0)
+            hit = has & (
+                (ret <= -stop_loss) |
+                ((take_profit > 0) & (ret >= take_profit)) |
+                ((trailing_stop > 0) & (trail_ret <= -trailing_stop))
+            )
+            w_stop = jnp.where(hit, 0.0, w_prev)
+            entry_stop = jnp.where(hit, 0.0, entry)
+            peak_stop = jnp.where(hit, 0.0, peak_upd)
+            tgt_adj = jnp.where(hit, 0.0, tgt)
+        else:
+            hit = jnp.zeros(N, dtype=bool)
+            w_stop = w_prev
+            entry_stop = entry
+            peak_stop = peak
+            tgt_adj = tgt
+
+        desired = jnp.where(rb, tgt_adj, w_stop)
+        if constraints:
+            adjusted = jnp.where(
+                bb & (desired > w_stop), w_stop,
+                jnp.where(sb & (desired < w_stop), w_stop, desired),
+            )
+            desired = adjusted
+
+        if min_hold > 0:
+            # 持有未满 min_hold 天的仓位不在本次调仓卖出，冻结其权重，
+            # 其余仓位按剩余预算等比缩放，避免总仓位超配。
+            protected = rb & (jnp.abs(w_prev) > 1e-9) & (age < float(min_hold))
+            frozen = jnp.where(protected, w_stop, 0.0)
+            free = jnp.where(protected, 0.0, desired)
+            frozen_sum = jnp.sum(jnp.abs(frozen))
+            free_sum = jnp.sum(jnp.abs(free))
+            budget = jnp.maximum(1.0 - frozen_sum, 0.0)
+            scale = jnp.where(free_sum > budget, budget / jnp.maximum(free_sum, 1e-12), 1.0)
+            desired = frozen + free * scale
+
+        if turnover_cap > 0:
+            # 单次调仓换手上限：按比例在旧仓与目标仓之间插值
+            delta = jnp.abs(desired - w_stop)
+            total = jnp.sum(delta)
+            alpha = jnp.minimum(1.0, turnover_cap / jnp.maximum(total, 1e-12))
+            blended = w_stop + alpha * (desired - w_stop)
+            desired = jnp.where(rb, blended, desired)
+
+        if rebalance_band > 0:
+            # 调仓缓冲带：权重变化小于阈值的个股维持原仓，避免小额频繁交易
+            tiny = jnp.abs(desired - w_stop) <= rebalance_band
+            desired = jnp.where(rb & tiny, w_stop, desired)
+
+        if use_stop:
+            desired = jnp.where(hit, 0.0, desired)
+
+        if use_stop:
+            new_entry = jnp.where(
+                rb,
+                jnp.where(
+                    (desired > 1e-9) & (w_stop <= 1e-9), px,
+                    jnp.where(desired <= 1e-9, 0.0, entry_stop),
+                ),
+                entry_stop,
+            )
+        else:
+            new_entry = entry
+        new_age = jnp.where(jnp.abs(desired) > 1e-9, age + 1.0, 0.0)
+        new_peak = jnp.where(jnp.abs(desired) > 1e-9, peak_stop, 0.0)
+
+        if weight_drift:
+            # 持仓权重随价格自然漂移，而非每日强制回到目标权重
+            port_ret = jnp.sum(desired * rt)
+            growth = desired * (1.0 + rt)
+            denom = jnp.maximum(1.0 + port_ret, 0.05)
+            new_w = jnp.where(
+                (jnp.abs(desired) > 1e-12) & (jnp.abs(1.0 + port_ret) > 1e-9),
+                growth / denom,
+                0.0,
+            )
+        else:
+            new_w = desired
+        return (new_w, new_entry, new_age, new_peak), desired
+
+    prev_c = close[:-1]
+    rets = close[1:] / prev_c - 1.0
     rets = jnp.nan_to_num(rets, nan=0.0, posinf=0.0, neginf=0.0)
     rets = jnp.clip(rets, -0.25, 0.25)
+    # 第 t 日权重赚取的是 t→t+1 的收益，因此漂移使用左移一日的收益率
+    rets_full = jnp.concatenate([rets, jnp.zeros((1, N), dtype=rets.dtype)], axis=0)
+
+    _, W = jax.lax.scan(
+        fill, (jnp.zeros(N), jnp.zeros(N), jnp.zeros(N), jnp.zeros(N)),
+        (target, rebalance, buy_block, sell_block, close, rets_full),
+    )
 
     gross = jnp.sum(W[:-1] * rets, axis=1)
-    dw = jnp.sum(jnp.abs(W[1:] - W[:-1]), axis=1)
-    # 第 t 期费用对应 t 日调仓（t=0 无调仓）
-    cost = commission * jnp.concatenate([jnp.zeros((1,), dtype=dw.dtype), dw[:-1]])
+    # 仅调仓日产生交易；非调仓日的权重变化来自价格漂移，不计换手与成本
+    trade_mask = jnp.asarray(rebalance[1:], dtype=bool)[:, None]
+    delta = jnp.where(trade_mask, W[1:] - W[:-1], 0.0)
+    dw = jnp.sum(jnp.abs(delta), axis=1)
+    # A 股成本模型：买入=佣金+滑点；卖出=佣金+印花税+滑点
+    buys = jnp.sum(jnp.maximum(delta, 0.0), axis=1)
+    sells = jnp.sum(jnp.maximum(-delta, 0.0), axis=1)
+    trade_cost = (commission + slippage) * buys + (commission + stamp_duty + slippage) * sells
+    cost = jnp.concatenate([jnp.zeros((1,), dtype=dw.dtype), trade_cost[:-1]])
     net = gross - cost
 
     nav = jnp.concatenate([jnp.ones((1,), dtype=net.dtype), jnp.cumprod(1.0 + net)])
@@ -92,7 +312,7 @@ def _simulate(
 
     peak = jnp.maximum.accumulate(nav)
     drawdown = nav / peak - 1.0
-    return nav, bench_nav, net, drawdown, dw, W
+    return nav, bench_nav, net, drawdown, dw, W, gross, cost
 
 
 @jax.jit
@@ -130,15 +350,58 @@ def run_backtest(
     top_n: int = 0,
     long_short: bool = False,
     commission: float = 0.0015,
+    stamp_duty: float = 0.0,
+    slippage: float = 0.0,
+    weighting: str = "equal",
+    max_weight: float = 0.0,
+    vol: np.ndarray | None = None,
+    timing: np.ndarray | None = None,
+    buy_block: np.ndarray | None = None,
+    sell_block: np.ndarray | None = None,
+    constraints: bool = False,
+    weight_override: np.ndarray | None = None,
+    use_override: bool = False,
+    stop_loss: float = 0.0,
+    take_profit: float = 0.0,
+    trailing_stop: float = 0.0,
+    industry_idx: np.ndarray | None = None,
+    industry_cap: float = 0.0,
+    n_industries: int = 0,
+    min_hold_days: int = 0,
+    turnover_cap: float = 0.0,
+    position_cap: float = 1.0,
+    vol_target: float = 0.0,
+    vol_lookback: int = 20,
+    rebalance_band: float = 0.0,
+    weight_drift: bool = True,
 ) -> dict[str, Any]:
     score_j = jnp.asarray(score, dtype=jnp.float64)
     close_j = jnp.asarray(close, dtype=jnp.float64)
     valid_j = jnp.asarray(valid, dtype=bool)
     reb_j = jnp.asarray(rebalance, dtype=bool)
+    vol_j = jnp.asarray(vol if vol is not None else np.ones_like(close), dtype=jnp.float64)
+    timing_j = jnp.asarray(timing if timing is not None else np.ones(close.shape[0]), dtype=jnp.float64)
+    buy_j = jnp.asarray(buy_block if buy_block is not None else np.zeros(close.shape, dtype=bool), dtype=bool)
+    sell_j = jnp.asarray(sell_block if sell_block is not None else np.zeros(close.shape, dtype=bool), dtype=bool)
+    override_j = jnp.asarray(
+        weight_override if weight_override is not None else np.zeros(close.shape), dtype=jnp.float64
+    )
+    ind_j = jnp.asarray(
+        industry_idx if industry_idx is not None else np.zeros(close.shape[1], dtype=np.int32),
+        dtype=jnp.int32,
+    )
 
-    nav, bench, net, drawdown, dw, W = _simulate(
+    nav, bench, net, drawdown, dw, W, gross_series, cost_series = _simulate(
         score_j, close_j, valid_j, reb_j,
         float(top_frac), int(top_n), bool(long_short), float(commission),
+        float(stamp_duty), float(slippage),
+        str(weighting), float(max_weight), vol_j, timing_j,
+        buy_j, sell_j, bool(constraints), override_j, bool(use_override),
+        float(stop_loss), float(take_profit), float(trailing_stop),
+        ind_j, float(industry_cap), int(n_industries),
+        int(min_hold_days), float(turnover_cap), float(position_cap),
+        float(vol_target), int(vol_lookback), float(rebalance_band),
+        bool(weight_drift),
     )
     m = _metrics(net, nav, dw)
 
@@ -149,5 +412,7 @@ def run_backtest(
         "drawdown": np.asarray(drawdown, dtype=np.float64),
         "turnover": np.asarray(dw, dtype=np.float64),
         "weights": np.asarray(W, dtype=np.float64),
+        "gross_returns": np.asarray(gross_series, dtype=np.float64),
+        "costs": np.asarray(cost_series, dtype=np.float64),
         "metrics": {k: float(v) for k, v in m.items()},
     }
