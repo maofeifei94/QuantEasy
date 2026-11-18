@@ -875,7 +875,9 @@
           </select>
           <span id="nfTplParams" style="display:flex;gap:8px;flex-wrap:wrap"></span>
           <button type="button" class="btn ghost sm" id="nfTplApply" disabled>生成表达式</button>
+          <button type="button" class="btn ghost sm" id="nfScanBtn" disabled>窗口扫描</button>
         </div>
+        <div id="nfScanWrap" style="margin-top:8px"></div>
       </div>
       <div class="field" style="margin-top:12px"><label>因子表达式</label>
         <textarea id="nfExpr" rows="4">${esc(expr)}</textarea>
@@ -916,7 +918,8 @@
       const tpl = FACTOR_TEMPLATES.find((t) => t.id === $("#nfTpl").value);
       const wrap = $("#nfTplParams");
       $("#nfTplApply").disabled = !tpl;
-      if (!tpl) { wrap.innerHTML = ""; return; }
+      $("#nfScanBtn").disabled = !tpl;
+      if (!tpl) { wrap.innerHTML = ""; $("#nfScanWrap").innerHTML = ""; return; }
       wrap.innerHTML = tpl.params.map((p) => `
         <label class="hint" style="display:flex;align-items:center;gap:4px">${esc(p.label)}
           <input type="number" min="2" max="250" step="1" value="${p.def}" data-param="${esc(p.key)}" style="width:68px">
@@ -942,6 +945,76 @@
       }
       toast("已生成表达式，可点击「测试表达式」检验");
     });
+    function currentTplParams() {
+      const tpl = FACTOR_TEMPLATES.find((t) => t.id === $("#nfTpl").value);
+      if (!tpl) return null;
+      const vals = {};
+      tpl.params.forEach((pp) => {
+        const el = $(`#nfTplParams [data-param="${pp.key}"]`);
+        let v = Math.round(Number(el ? el.value : pp.def));
+        if (!isFinite(v) || v < 2) v = pp.def;
+        vals[pp.key] = Math.min(v, 250);
+      });
+      return { tpl, vals };
+    }
+    $("#nfScanBtn").addEventListener("click", async () => {
+      const cur = currentTplParams();
+      if (!cur) return;
+      const { tpl, vals } = cur;
+      const scanKey = tpl.params[0].key;
+      const expression = tpl.build({ ...vals, [scanKey]: "{p}" });
+      if (!expression.includes("{p}")) { toast("该模板不支持窗口扫描", true); return; }
+      const wrap = $("#nfScanWrap");
+      const btn = $("#nfScanBtn");
+      btn.disabled = true;
+      wrap.innerHTML = `<div class="hint-box"><span class="spinner"></span> 正在扫描窗口参数，约需数秒…</div>`;
+      try {
+        const res = await api("/api/factors/scan", {
+          method: "POST",
+          body: {
+            expression,
+            direction: Number($("#nfDirection").value),
+            horizon: 5,
+            values: Array.from({ length: 24 }, (_, i) => (i + 1) * 5),
+          },
+        });
+        renderScanResult(res, scanKey);
+      } catch (e) {
+        wrap.innerHTML = `<div class="hint-box"><span class="down">${esc(e.message)}</span></div>`;
+      } finally {
+        btn.disabled = false;
+      }
+    });
+    function renderScanResult(res, scanKey) {
+      const wrap = $("#nfScanWrap");
+      const best = res.best;
+      const items = res.items || [];
+      wrap.innerHTML = `
+        <div class="hint-box" style="margin-top:0">
+          <div class="factor-meta">
+            <span class="chip green">最优窗口 ${best.value}</span>
+            <span class="chip">IC ${fmtNum(best.ic, 4)}</span>
+            <span class="chip">ICIR ${fmtNum(best.icir, 3)}</span>
+            <span class="chip">覆盖率 ${fmtPct(best.coverage, 1, false)}</span>
+            <button type="button" class="btn ghost sm" id="nfScanApply">采用该窗口</button>
+          </div>
+          <canvas id="nfScanChart" style="margin-top:10px"></canvas>
+          <div class="panel-sub" style="margin-top:6px">扫描 ${items.length} 个窗口（${items[0].value}–${items[items.length - 1].value} 日），纵轴为年化 ICIR；仅作参数参考，注意过拟合风险</div>
+        </div>`;
+      Charts.line($("#nfScanChart"), {
+        labels: items.map((i) => String(i.value)),
+        series: [{ name: "ICIR", data: items.map((i) => i.icir), color: "#5b8def", fill: true }],
+        height: 180,
+        yFmt: (v) => v.toFixed(2),
+        includeZero: true,
+      });
+      $("#nfScanApply").addEventListener("click", () => {
+        const el = $(`#nfTplParams [data-param="${scanKey}"]`);
+        if (el) el.value = best.value;
+        $("#nfTplApply").click();
+        toast(`已采用窗口 ${best.value}`);
+      });
+    }
     $("#nfTestBtn").addEventListener("click", async () => {
       const expression = $("#nfExpr").value.trim();
       if (!expression) { toast("请填写因子表达式", true); return; }

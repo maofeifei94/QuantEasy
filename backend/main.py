@@ -214,6 +214,16 @@ def factor_correlation(payload: dict = Body(...)) -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/api/factors/scan")
+def factor_scan(payload: dict = Body(...)) -> dict:
+    try:
+        return services.factor_scan(payload)
+    except (FactorError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=f"参数扫描失败：{exc}") from exc
+
+
 @app.post("/api/factors/mine")
 def mine_factors(payload: dict = Body(...)) -> dict:
     try:

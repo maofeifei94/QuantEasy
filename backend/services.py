@@ -520,6 +520,62 @@ def mine_factors(payload: dict) -> dict:
     }
 
 
+def factor_scan(payload: dict) -> dict:
+    """因子窗口参数扫描：表达式用 {p} 占位符，批量评估不同参数下的 IC 表现。"""
+    expr = (payload.get("expression") or "").strip()
+    if "{p}" not in expr:
+        raise ValueError("表达式需包含 {p} 占位符，例如 close / ts_delay(close, {p}) - 1")
+    raw_values = payload.get("values") or list(range(5, 121, 5))
+    if not isinstance(raw_values, list) or not raw_values:
+        raise ValueError("请提供要扫描的参数值")
+    if len(raw_values) > 40:
+        raise ValueError("最多扫描 40 个参数值")
+    values = sorted({int(v) for v in raw_values if str(v).lstrip("-").isdigit() and int(v) > 0})
+    if not values:
+        raise ValueError("参数值必须为正整数")
+    direction = int(payload.get("direction") or 1)
+    if direction not in (1, -1):
+        direction = 1
+    horizon = int(payload.get("horizon") or 5)
+    codes = payload.get("codes") or None
+    data = panel.build_panel(codes, payload.get("start") or None, payload.get("end") or None)
+    valid = _apply_filters(data, payload.get("filters"))
+
+    items = []
+    for v in values:
+        expression = expr.replace("{p}", str(v))
+        try:
+            validate(expression)
+            score = np.asarray(compute(expression, data) * direction, dtype=np.float64)
+            stats = analysis.quick_ic(score, data["close"], valid, horizon)
+        except Exception:
+            continue
+        if stats["coverage"] < 0.2:
+            continue
+        items.append({
+            "value": v,
+            "ic": round(float(stats["mean"]), 4),
+            "icir": round(float(stats["ir"]), 3),
+            "positive_rate": stats["positive_rate"],
+            "coverage": stats["coverage"],
+        })
+    if not items:
+        raise ValueError("没有可用的参数结果，请检查表达式或数据范围")
+    best = max(items, key=lambda x: abs(x["icir"]))
+    return {
+        "horizon": horizon,
+        "direction": direction,
+        "items": items,
+        "best": best,
+        "universe": {
+            "stocks": len(data["codes"]),
+            "start": data["dates"][0],
+            "end": data["dates"][-1],
+            "days": len(data["dates"]),
+        },
+    }
+
+
 # --------------------------------------------------------------------------- #
 # 回测
 # --------------------------------------------------------------------------- #
