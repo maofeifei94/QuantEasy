@@ -30,6 +30,12 @@ def _roll_sum(x: jnp.ndarray, n: int) -> jnp.ndarray:
     return cs[n - 1:] - head
 
 
+def _window(x: jnp.ndarray, n: int) -> jnp.ndarray:
+    """构造形状 (T, N, n) 的滚动窗口，最后一维按时间升序（旧→新）。"""
+    x = _as2d(x)
+    return jnp.stack([ts_delay(x, n - 1 - k) for k in range(n)], axis=-1)
+
+
 def _masked(x, n: int, minp: int | None = None):
     x = _as2d(x)
     valid = jnp.isfinite(x)
@@ -64,24 +70,20 @@ def ts_min(x, n: int):
     x = _as2d(x)
     if x.shape[0] < n:
         return jnp.full_like(x, jnp.nan)
-    win = jnp.lib.stride_tricks.sliding_window_view(x, n, axis=0)
+    win = _window(x, n)
     win = jnp.where(jnp.isfinite(win), win, jnp.inf)
     res = jnp.min(win, axis=-1)
-    res = jnp.where(jnp.isfinite(res), res, jnp.nan)
-    pad = jnp.full((n - 1,) + x.shape[1:], jnp.nan)
-    return jnp.concatenate([pad, res], axis=0)
+    return jnp.where(jnp.isfinite(res), res, jnp.nan)
 
 
 def ts_max(x, n: int):
     x = _as2d(x)
     if x.shape[0] < n:
         return jnp.full_like(x, jnp.nan)
-    win = jnp.lib.stride_tricks.sliding_window_view(x, n, axis=0)
+    win = _window(x, n)
     win = jnp.where(jnp.isfinite(win), win, -jnp.inf)
     res = jnp.max(win, axis=-1)
-    res = jnp.where(jnp.isfinite(res), res, jnp.nan)
-    pad = jnp.full((n - 1,) + x.shape[1:], jnp.nan)
-    return jnp.concatenate([pad, res], axis=0)
+    return jnp.where(jnp.isfinite(res), res, jnp.nan)
 
 
 def ts_rank(x, n: int):
@@ -89,14 +91,12 @@ def ts_rank(x, n: int):
     x = _as2d(x)
     if x.shape[0] < n:
         return jnp.full_like(x, jnp.nan)
-    win = jnp.lib.stride_tricks.sliding_window_view(x, n, axis=0)
+    win = _window(x, n)
     last = win[..., -1:]
     valid = jnp.isfinite(win)
     cnt = jnp.sum(valid, axis=-1)
     le = jnp.sum(jnp.where(valid & (win <= last), 1.0, 0.0), axis=-1)
-    res = jnp.where(cnt >= max(2, n // 2), le / jnp.maximum(cnt, 1), jnp.nan)
-    pad = jnp.full((n - 1,) + x.shape[1:], jnp.nan)
-    return jnp.concatenate([pad, res], axis=0)
+    return jnp.where(cnt >= max(2, n // 2), le / jnp.maximum(cnt, 1), jnp.nan)
 
 
 def ts_delay(x, n: int):
@@ -169,22 +169,20 @@ def ts_argmax(x, n: int):
     x = _as2d(x)
     if x.shape[0] < n:
         return jnp.full_like(x, jnp.nan)
-    win = jnp.lib.stride_tricks.sliding_window_view(x, n, axis=0)
-    win = jnp.where(jnp.isfinite(win), win, -jnp.inf)
-    pos = jnp.argmax(win, axis=-1).astype(jnp.float64) / max(n - 1, 1)
-    pad = jnp.full((n - 1,) + x.shape[1:], jnp.nan)
-    return jnp.concatenate([pad, pos], axis=0)
+    win = _window(x, n)
+    filled = jnp.where(jnp.isfinite(win), win, -jnp.inf)
+    pos = jnp.argmax(filled, axis=-1).astype(jnp.float64) / max(n - 1, 1)
+    return jnp.where(jnp.any(jnp.isfinite(win), axis=-1), pos, jnp.nan)
 
 
 def ts_argmin(x, n: int):
     x = _as2d(x)
     if x.shape[0] < n:
         return jnp.full_like(x, jnp.nan)
-    win = jnp.lib.stride_tricks.sliding_window_view(x, n, axis=0)
-    win = jnp.where(jnp.isfinite(win), win, jnp.inf)
-    pos = jnp.argmin(win, axis=-1).astype(jnp.float64) / max(n - 1, 1)
-    pad = jnp.full((n - 1,) + x.shape[1:], jnp.nan)
-    return jnp.concatenate([pad, pos], axis=0)
+    win = _window(x, n)
+    filled = jnp.where(jnp.isfinite(win), win, jnp.inf)
+    pos = jnp.argmin(filled, axis=-1).astype(jnp.float64) / max(n - 1, 1)
+    return jnp.where(jnp.any(jnp.isfinite(win), axis=-1), pos, jnp.nan)
 
 
 def decay_linear(x, n: int):
@@ -192,14 +190,12 @@ def decay_linear(x, n: int):
     x = _as2d(x)
     if x.shape[0] < n:
         return jnp.full_like(x, jnp.nan)
-    win = jnp.lib.stride_tricks.sliding_window_view(x, n, axis=0)
+    win = _window(x, n)
     valid = jnp.isfinite(win)
     weights = jnp.arange(1, n + 1, dtype=jnp.float64)
     num = jnp.sum(jnp.where(valid, win, 0.0) * weights, axis=-1)
     den = jnp.sum(jnp.where(valid, weights, 0.0), axis=-1)
-    res = jnp.where(den > 0, num / jnp.maximum(den, 1e-12), jnp.nan)
-    pad = jnp.full((n - 1,) + x.shape[1:], jnp.nan)
-    return jnp.concatenate([pad, res], axis=0)
+    return jnp.where(den > 0, num / jnp.maximum(den, 1e-12), jnp.nan)
 
 
 def cs_rank(x):

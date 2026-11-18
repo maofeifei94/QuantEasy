@@ -321,6 +321,13 @@ def _apply_filters(data: dict, filters: dict | None) -> np.ndarray:
         if exclude_bj and (base.startswith("8") or base.startswith("4")):
             valid[:, j] = False
 
+    wanted = {str(x) for x in (filters.get("industries") or []) if x}
+    if wanted:
+        industries = data.get("industries") or {}
+        for j, code in enumerate(codes):
+            if industries.get(code, "未分类") not in wanted:
+                valid[:, j] = False
+
     min_days = int(filters.get("min_list_days") or 0)
     if min_days > 0:
         tradable = data["tradable"]

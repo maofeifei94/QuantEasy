@@ -338,6 +338,10 @@
               <label>最少上市天数</label>
               <input type="number" id="filterDays" value="0" min="0" step="20">
             </div>
+            <div class="field">
+              <label>行业过滤 <span class="hint">不选=全部</span></label>
+              <select id="filterIndustries" multiple size="3" style="height:auto;min-height:64px"></select>
+            </div>
           </div>
           <div class="switch-row" style="margin-top:10px">
             <label class="switch"><input type="checkbox" id="filterStar" checked><span class="track"></span><span>剔除科创板</span></label>
@@ -537,6 +541,12 @@
             <span class="track"></span>
             <span>排除北交所</span>
           </label>
+        </div>
+        <div class="form-grid" style="margin-top:12px">
+          <div class="field">
+            <label>行业过滤 <span class="hint">不选=全部，Ctrl 可多选</span></label>
+            <select id="scrIndustries" multiple size="3" style="height:auto;min-height:64px"></select>
+          </div>
         </div>
         <div id="scrConds" style="margin-top:14px;display:flex;flex-direction:column;gap:8px"></div>
         <div class="form-row" style="margin-top:12px">

@@ -36,6 +36,36 @@
 
   const CAT_ORDER = ["动量/反转", "波动率", "量价", "流动性", "技术指标", "自定义"];
 
+  /* 参数化因子模板：选择模板 + 调整窗口 → 自动生成表达式 */
+  const FACTOR_TEMPLATES = [
+    { id: "momentum", label: "N 日动量", prefix: "动量", params: [{ key: "n", label: "窗口", def: 20 }],
+      build: (p) => `rank(close / ts_delay(close, ${p.n}) - 1)` },
+    { id: "reversal", label: "N 日反转", prefix: "反转", params: [{ key: "n", label: "窗口", def: 5 }],
+      build: (p) => `rank(-(close / ts_delay(close, ${p.n}) - 1))` },
+    { id: "lowvol", label: "低波动", prefix: "低波动", params: [{ key: "n", label: "窗口", def: 20 }],
+      build: (p) => `rank(-ts_std(returns, ${p.n}))` },
+    { id: "volratio", label: "量比", prefix: "量比", params: [{ key: "n", label: "窗口", def: 20 }],
+      build: (p) => `rank(volume / ts_mean(volume, ${p.n}))` },
+    { id: "bias", label: "均线乖离", prefix: "乖离", params: [{ key: "n", label: "窗口", def: 20 }],
+      build: (p) => `rank(close / ts_mean(close, ${p.n}) - 1)` },
+    { id: "amt_trend", label: "成交额趋势", prefix: "额趋势", params: [{ key: "n", label: "短窗", def: 5 }, { key: "m", label: "长窗", def: 20 }],
+      build: (p) => `rank(ts_mean(amount, ${p.n}) / ts_mean(amount, ${p.m}) - 1)` },
+    { id: "pv_corr", label: "量价相关性", prefix: "量价相关", params: [{ key: "n", label: "窗口", def: 20 }],
+      build: (p) => `rank(-ts_corr(close, volume, ${p.n}))` },
+    { id: "skew", label: "收益偏度", prefix: "偏度", params: [{ key: "n", label: "窗口", def: 20 }],
+      build: (p) => `rank(-ts_skew(returns, ${p.n}))` },
+    { id: "maxret", label: "极端收益（彩票效应）", prefix: "极端收益", params: [{ key: "n", label: "窗口", def: 20 }],
+      build: (p) => `rank(-ts_max(returns, ${p.n}))` },
+    { id: "range_pos", label: "价格区间位置", prefix: "区间位置", params: [{ key: "n", label: "窗口", def: 60 }],
+      build: (p) => `rank((close - ts_min(low, ${p.n})) / (ts_max(high, ${p.n}) - ts_min(low, ${p.n}) + 1e-9))` },
+    { id: "rsi", label: "RSI 相对强弱", prefix: "RSI", params: [{ key: "n", label: "周期", def: 14 }],
+      build: (p) => `rank(ts_mean(max(ts_delta(close, 1), 0), ${p.n}) / (ts_mean(abs(ts_delta(close, 1)), ${p.n}) + 1e-9))` },
+    { id: "macd", label: "双均线强弱", prefix: "双均线", params: [{ key: "n", label: "短窗", def: 12 }, { key: "m", label: "长窗", def: 26 }],
+      build: (p) => `rank(ts_mean(close, ${p.n}) / ts_mean(close, ${p.m}) - 1)` },
+    { id: "vol_stab", label: "量能稳定性", prefix: "量能稳定", params: [{ key: "n", label: "基窗", def: 60 }, { key: "m", label: "平滑", def: 20 }],
+      build: (p) => `rank(-ts_std(volume / ts_mean(volume, ${p.n}), ${p.m}))` },
+  ];
+
   /* ------------------------------ 工具 ------------------------------ */
   function esc(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({
@@ -286,6 +316,19 @@
     $$("#stockTableBody tr").forEach((tr) => {
       if (!tr.dataset.code) return;
       tr.addEventListener("click", () => openStockModal(tr.dataset.code));
+    });
+    renderIndustryFilter();
+  }
+
+  function renderIndustryFilter() {
+    const names = [...new Set(state.stocks.map((s) => s.industry).filter(Boolean))].sort();
+    ["#filterIndustries", "#scrIndustries"].forEach((sel) => {
+      const el = $(sel);
+      if (!el) return;
+      const cur = new Set(Array.from(el.selectedOptions).map((o) => o.value));
+      el.innerHTML = names.map((n) =>
+        `<option value="${esc(n)}" ${cur.has(n) ? "selected" : ""}>${esc(n)}</option>`
+      ).join("");
     });
   }
 
@@ -824,6 +867,16 @@
           </select>
         </div>
       </div>
+      <div class="field" style="margin-top:12px"><label>参数化模板</label>
+        <div class="form-row" style="gap:8px;flex-wrap:wrap;align-items:flex-end">
+          <select id="nfTpl" style="flex:1;min-width:170px">
+            <option value="">选择模板（可选）…</option>
+            ${FACTOR_TEMPLATES.map((t) => `<option value="${esc(t.id)}">${esc(t.label)}</option>`).join("")}
+          </select>
+          <span id="nfTplParams" style="display:flex;gap:8px;flex-wrap:wrap"></span>
+          <button type="button" class="btn ghost sm" id="nfTplApply" disabled>生成表达式</button>
+        </div>
+      </div>
       <div class="field" style="margin-top:12px"><label>因子表达式</label>
         <textarea id="nfExpr" rows="4">${esc(expr)}</textarea>
       </div>
@@ -859,6 +912,36 @@
     $$("#modalBox [data-tpl-expr]").forEach((b) => b.addEventListener("click", () => {
       $("#nfExpr").value = b.dataset.tplExpr;
     }));
+    function renderTplParams() {
+      const tpl = FACTOR_TEMPLATES.find((t) => t.id === $("#nfTpl").value);
+      const wrap = $("#nfTplParams");
+      $("#nfTplApply").disabled = !tpl;
+      if (!tpl) { wrap.innerHTML = ""; return; }
+      wrap.innerHTML = tpl.params.map((p) => `
+        <label class="hint" style="display:flex;align-items:center;gap:4px">${esc(p.label)}
+          <input type="number" min="2" max="250" step="1" value="${p.def}" data-param="${esc(p.key)}" style="width:68px">
+        </label>`).join("");
+    }
+    $("#nfTpl").addEventListener("change", renderTplParams);
+    $("#nfTplApply").addEventListener("click", () => {
+      const tpl = FACTOR_TEMPLATES.find((t) => t.id === $("#nfTpl").value);
+      if (!tpl) return;
+      const vals = {};
+      tpl.params.forEach((pp) => {
+        const el = $(`#nfTplParams [data-param="${pp.key}"]`);
+        let v = Math.round(Number(el ? el.value : pp.def));
+        if (!isFinite(v) || v < 2) v = pp.def;
+        v = Math.min(v, 250);
+        vals[pp.key] = v;
+        if (el) el.value = v;
+      });
+      $("#nfExpr").value = tpl.build(vals);
+      const nameInput = $("#nfName");
+      if (!nameInput.value.trim()) {
+        nameInput.value = tpl.prefix + "_" + tpl.params.map((pp) => vals[pp.key]).join("_");
+      }
+      toast("已生成表达式，可点击「测试表达式」检验");
+    });
     $("#nfTestBtn").addEventListener("click", async () => {
       const expression = $("#nfExpr").value.trim();
       if (!expression) { toast("请填写因子表达式", true); return; }
@@ -1155,6 +1238,7 @@
         exclude_limit_up: $("#filterLimitUp").checked,
         min_amount: Number($("#filterAmount").value) || 0,
         min_list_days: Number($("#filterDays").value) || 0,
+        industries: Array.from($("#filterIndustries").selectedOptions).map((o) => o.value),
       },
       benchmark: $("#btBenchmark").value,
       weighting: $("#btWeighting").value,
@@ -1416,6 +1500,8 @@
     $("#filterTrade").checked = !!cfg.trade_constraints;
     setVal("#filterAmount", filters.min_amount);
     setVal("#filterDays", filters.min_list_days);
+    const wantedInd = new Set(filters.industries || []);
+    $$("#filterIndustries option").forEach((o) => { o.selected = wantedInd.has(o.value); });
     const pre = cfg.preprocess || {};
     $("#ppWinsor").checked = !!pre.winsorize;
     $("#ppNeutral").checked = !!pre.neutralize;
@@ -2352,6 +2438,7 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
           exclude_star: $("#scrStar").checked,
           exclude_bj: $("#scrBJ").checked,
           min_amount: (Number($("#scrAmount").value) || 0) * 10000,
+          industries: Array.from($("#scrIndustries").selectedOptions).map((o) => o.value),
         },
         conditions: state.screenerConds.map((c) => ({
           factor_id: c.factorId, mode: c.mode, value: c.value,
@@ -2444,6 +2531,7 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
         star: $("#scrStar").checked,
         bj: $("#scrBJ").checked,
         amount: Number($("#scrAmount").value) || 0,
+        industries: Array.from($("#scrIndustries").selectedOptions).map((o) => o.value),
       },
       limit: Number($("#scrLimit").value) || 50,
       logic: $("#scrLogic").value,
@@ -2474,6 +2562,8 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
       $("#scrStar").checked = f.star !== false;
       $("#scrBJ").checked = f.bj !== false;
       $("#scrAmount").value = f.amount || 0;
+      const wanted = new Set(f.industries || []);
+      $$("#scrIndustries option").forEach((o) => { o.selected = wanted.has(o.value); });
       $("#scrLimit").value = s.limit || 50;
       $("#scrLogic").value = s.logic || "and";
       renderScreenerConds();
