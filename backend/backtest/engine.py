@@ -84,6 +84,8 @@ def _simulate(
     top_n: int,
     long_short: bool,
     commission: float,
+    stamp_duty: float,
+    slippage: float,
     weighting: str,
     max_weight: float,
     vol: jnp.ndarray,
@@ -108,8 +110,12 @@ def _simulate(
 
     gross = jnp.sum(W[:-1] * rets, axis=1)
     dw = jnp.sum(jnp.abs(W[1:] - W[:-1]), axis=1)
-    # 第 t 期费用对应 t 日调仓（t=0 无调仓）
-    cost = commission * jnp.concatenate([jnp.zeros((1,), dtype=dw.dtype), dw[:-1]])
+    # A 股成本模型：买入=佣金+滑点；卖出=佣金+印花税+滑点
+    delta = W[1:] - W[:-1]
+    buys = jnp.sum(jnp.maximum(delta, 0.0), axis=1)
+    sells = jnp.sum(jnp.maximum(-delta, 0.0), axis=1)
+    trade_cost = (commission + slippage) * buys + (commission + stamp_duty + slippage) * sells
+    cost = jnp.concatenate([jnp.zeros((1,), dtype=dw.dtype), trade_cost[:-1]])
     net = gross - cost
 
     nav = jnp.concatenate([jnp.ones((1,), dtype=net.dtype), jnp.cumprod(1.0 + net)])
@@ -161,6 +167,8 @@ def run_backtest(
     top_n: int = 0,
     long_short: bool = False,
     commission: float = 0.0015,
+    stamp_duty: float = 0.0,
+    slippage: float = 0.0,
     weighting: str = "equal",
     max_weight: float = 0.0,
     vol: np.ndarray | None = None,
@@ -174,6 +182,7 @@ def run_backtest(
     nav, bench, net, drawdown, dw, W = _simulate(
         score_j, close_j, valid_j, reb_j,
         float(top_frac), int(top_n), bool(long_short), float(commission),
+        float(stamp_duty), float(slippage),
         str(weighting), float(max_weight), vol_j,
     )
     m = _metrics(net, nav, dw)

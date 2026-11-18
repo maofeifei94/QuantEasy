@@ -504,6 +504,7 @@
         ${res.ic_by_year.map((y) => `<span class="chip ${y.ic >= 0 ? "green" : "amber"}">${y.year} · ${fmtNum(y.ic, 3)}</span>`).join("")}
       </div>` : ""}
       <div id="icBlock"></div>
+      <div id="icMonthBlock"></div>
       <div class="grid-2" style="margin-top:0">
         <div id="decayBlock"></div>
         <div id="quantileBlock"></div>
@@ -520,6 +521,16 @@
       labels, series: [{ name: "IC", data: vals, color: "#3ddc97", fill: true }],
       height: 210, yFmt: (v) => v.toFixed(2), xFmt: shortDate, includeZero: true,
     });
+
+    if ((res.ic_monthly || []).length) {
+      const monthBlock = document.createElement("div");
+      monthBlock.innerHTML = `<div style="margin-top:18px">
+        <div class="chart-title-row"><div><div class="panel-title" style="font-size:13px">月度 IC 热力图</div><div class="panel-sub">蓝色为正向 IC，橙色为负向 IC</div></div></div>
+        <div id="icMonthHeat" class="heatmap"></div>
+      </div>`;
+      box.querySelector("#icMonthBlock").appendChild(monthBlock);
+      renderICMonthHeat(monthBlock.querySelector("#icMonthHeat"), res.ic_monthly);
+    }
 
     const decayBlock = document.createElement("div");
     decayBlock.innerHTML = `<div style="margin-top:18px"><div class="chart-title-row"><div><div class="panel-title" style="font-size:13px">IC 衰减</div><div class="panel-sub">不同预测窗口的平均 IC</div></div></div><div class="chart-wrap"><canvas></canvas></div></div>`;
@@ -570,6 +581,35 @@
         height: 190, yFmt: (v) => v.toFixed(3), xFmt: shortDate,
       });
     }
+  }
+
+  function renderICMonthHeat(el, data) {
+    const years = [...new Set(data.map((d) => d.year))].sort();
+    const byKey = {};
+    data.forEach((d) => { byKey[d.year + "-" + d.month] = d.ic; });
+    const yearAvg = {};
+    years.forEach((y) => {
+      const vals = data.filter((d) => d.year === y).map((d) => d.ic);
+      yearAvg[y] = vals.reduce((a, b) => a + b, 0) / (vals.length || 1);
+    });
+    const color = (v) => {
+      const alpha = 0.07 + Math.min(0.6, Math.abs(v) * 3.2);
+      return v >= 0 ? `rgba(106,169,255,${alpha})` : `rgba(245,181,107,${alpha})`;
+    };
+    let html = `<div class="hm-label"></div>` +
+      Array.from({ length: 12 }, (_, i) => `<div class="hm-head">${i + 1}月</div>`).join("") +
+      `<div class="hm-head">年度</div>`;
+    years.forEach((y) => {
+      html += `<div class="hm-label">${y}</div>`;
+      for (let mo = 1; mo <= 12; mo++) {
+        const v = byKey[y + "-" + mo];
+        if (v === undefined) { html += `<div class="hm-cell"></div>`; continue; }
+        html += `<div class="hm-cell" style="background:${color(v)}" title="${y}-${mo}: IC ${v}">${v.toFixed(2)}</div>`;
+      }
+      html += `<div class="hm-cell" style="background:${color(yearAvg[y])};font-weight:600">${yearAvg[y].toFixed(2)}</div>`;
+    });
+    el.style.gridTemplateColumns = "46px repeat(13, 1fr)";
+    el.innerHTML = html;
   }
 
   async function deleteFactor(id) {
@@ -698,6 +738,38 @@
     renderCombo();
   }
 
+  async function autoWeightByIC() {
+    if (!state.btFactors.length) { toast("请先添加因子", true); return; }
+    const btn = $("#icWeightBtn");
+    btn.disabled = true;
+    btn.textContent = "计算中";
+    try {
+      const range = {
+        start: state.status && state.status.start_date,
+        end: state.status && state.status.end_date,
+      };
+      const results = await Promise.all(state.btFactors.map((f) =>
+        api("/api/factors/preview", {
+          method: "POST",
+          body: { factor_id: f.id, horizon: 5, ...range },
+        })
+      ));
+      const scores = results.map((r) => Math.max(Number(r.ic.ir) || 0, 0));
+      const total = scores.reduce((a, b) => a + b, 0);
+      if (total <= 0) { toast("所选因子 ICIR 均非正，无法自动加权", true); return; }
+      state.btFactors.forEach((f, i) => {
+        f.weight = Math.max(0.01, Math.round(scores[i] / total * 100) / 100);
+      });
+      renderCombo();
+      toast("已按 ICIR 自动分配因子权重");
+    } catch (e) {
+      toast(e.message, true);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "IC 加权";
+    }
+  }
+
   function renderUniverse() {
     const box = $("#universeList");
     if (!state.stocks.length) {
@@ -750,7 +822,9 @@
       rebalance_days: Number($("#btRebalance").value),
       top_n: Number($("#btTopN").value) || 0,
       top_pct: Number($("#btTopPct").value) || 0.2,
-      commission_bps: Number($("#btCost").value) || 0,
+      commission_bps: Number($("#btCommission").value) || 0,
+      stamp_duty_bps: Number($("#btStamp").value) || 0,
+      slippage_bps: Number($("#btSlip").value) || 0,
       long_short: $("#btLongShort").checked,
     };
   }
@@ -794,6 +868,192 @@
     $("#btTopN").value = tpl.topN;
     $("#btBenchmark").value = tpl.benchmark;
     toast(`已应用策略模板：${tpl.label}`);
+  }
+
+  /* ------------------------------ 最新信号 ------------------------------ */
+  async function openSignal() {
+    if (!state.btFactors.length) { toast("请至少添加一个因子", true); return; }
+    openModal(`
+      <div class="modal-head">
+        <div><h3>最新持仓信号</h3><div class="panel-sub" style="margin-top:3px">按当前因子与过滤条件生成目标持仓</div></div>
+        <button class="icon-btn" data-close>✕</button>
+      </div>
+      <div class="empty" style="border:none;padding:50px 20px">
+        <span class="spinner" style="width:22px;height:22px;margin:0 auto 12px;display:block"></span>
+        <p>正在计算最新交易日信号…</p>
+      </div>`, true);
+    try {
+      const res = await api("/api/signal", { method: "POST", body: buildCommonConfig() });
+      renderSignal(res);
+    } catch (e) {
+      closeModal();
+      toast(e.message, true);
+    }
+  }
+
+  function renderSignal(res) {
+    const wLabel = { equal: "等权", score: "得分加权", inverse_vol: "波动率倒数" }[res.config.weighting] || "等权";
+    const chips = (res.factor.factors || []).map((f) =>
+      `<span class="chip blue">${esc(f.label)} ${(f.weight * 100).toFixed(0)}%</span>`).join("");
+    openModal(`
+      <div class="modal-head">
+        <div>
+          <h3>最新持仓信号 <span style="font-family:var(--mono);font-size:12px;color:var(--faint)">${esc(res.as_of)}</span></h3>
+          <div class="factor-meta" style="margin-top:6px">
+            ${chips}
+            <span class="chip">${wLabel}</span>
+            <span class="chip">持仓 ${res.items.length} 只</span>
+            ${res.config.max_weight > 0 ? `<span class="chip">上限 ${res.config.max_weight}%</span>` : ""}
+          </div>
+        </div>
+        <button class="icon-btn" data-close>✕</button>
+      </div>
+      <div class="table-wrap" style="max-height:430px">
+        <table>
+          <thead><tr><th>代码</th><th>名称</th><th>行业</th><th style="text-align:right">目标权重</th><th style="text-align:right">最新价</th><th style="text-align:right">涨跌幅</th><th style="text-align:right">因子值</th></tr></thead>
+          <tbody>
+            ${res.items.map((it) => `<tr style="cursor:default">
+              <td><span class="cd">${esc(it.code)}</span></td>
+              <td>${esc(it.name)}</td>
+              <td><span class="chip">${esc(it.industry)}</span></td>
+              <td style="text-align:right" class="num-mono">${(it.weight * 100).toFixed(1)}%</td>
+              <td style="text-align:right" class="num-mono">${it.close == null ? "—" : fmtNum(it.close)}</td>
+              <td style="text-align:right" class="num-mono ${it.change_pct > 0 ? "up" : it.change_pct < 0 ? "down" : ""}">${it.change_pct == null ? "—" : (it.change_pct > 0 ? "+" : "") + fmtNum(it.change_pct) + "%"}</td>
+              <td style="text-align:right" class="num-mono">${fmtNum(it.score, 3)}</td>
+            </tr>`).join("")}
+          </tbody>
+        </table>
+      </div>
+      <div class="modal-foot" style="justify-content:space-between;align-items:center">
+        <span class="panel-sub">基于最新交易日截面，仅供研究参考</span>
+        <div class="form-row">
+          <button class="btn ghost" data-close>关闭</button>
+          <button class="btn primary" id="signalCsv">导出信号 CSV</button>
+        </div>
+      </div>`, true);
+    $("#signalCsv").addEventListener("click", () => {
+      const rows = [["code", "name", "industry", "weight", "close", "change_pct", "factor_score"]];
+      res.items.forEach((it) => rows.push([it.code, it.name, it.industry, it.weight, it.close, it.change_pct, it.score]));
+      downloadCsv(rows, `signal_${res.as_of}.csv`);
+      toast("信号已导出 CSV");
+    });
+  }
+
+  function downloadCsv(rows, filename) {
+    const csv = "\ufeff" + rows.map((row) => row.join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  /* ------------------------------ 配置保存 ------------------------------ */
+  const CONFIG_KEY = "alphalab_bt_configs";
+
+  function loadSavedConfigs() {
+    try { return JSON.parse(localStorage.getItem(CONFIG_KEY) || "[]"); } catch (e) { return []; }
+  }
+
+  function persistConfigs(list) {
+    localStorage.setItem(CONFIG_KEY, JSON.stringify(list.slice(0, 30)));
+  }
+
+  function saveCurrentConfig() {
+    openModal(`
+      <div class="modal-head"><div><h3>保存回测配置</h3><div class="panel-sub" style="margin-top:3px">保存在浏览器本地，可从「载入」恢复</div></div>
+        <button class="icon-btn" data-close>✕</button></div>
+      <div class="field"><label>配置名称</label><input type="text" id="cfgName" value="${esc(payloadLabel())}"></div>
+      <div class="modal-foot">
+        <button class="btn ghost" data-close>取消</button>
+        <button class="btn primary" id="cfgSave">保存配置</button>
+      </div>`);
+    $("#cfgName").focus();
+    $("#cfgSave").addEventListener("click", () => {
+      const name = $("#cfgName").value.trim();
+      if (!name) { toast("请输入配置名称", true); return; }
+      const list = loadSavedConfigs();
+      list.unshift({
+        name,
+        created: new Date().toLocaleString("zh-CN", { hour12: false }),
+        config: buildCommonConfig(),
+      });
+      persistConfigs(list);
+      closeModal();
+      toast(`配置「${name}」已保存到本地`);
+    });
+  }
+
+  function openLoadConfig() {
+    const list = loadSavedConfigs();
+    if (!list.length) { toast("还没有保存的配置", true); return; }
+    openModal(`
+      <div class="modal-head"><div><h3>载入回测配置</h3><div class="panel-sub" style="margin-top:3px">保存在浏览器本地</div></div>
+        <button class="icon-btn" data-close>✕</button></div>
+      <div style="display:flex;flex-direction:column;gap:6px">
+        ${list.map((item, i) => `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;border:1px solid var(--border-soft);background:#0a121c;border-radius:8px;padding:9px 12px">
+          <div><div style="font-size:13px">${esc(item.name)}</div><div class="panel-sub" style="margin-top:1px">${esc(item.created)} · ${(item.config.factors || []).length} 个因子</div></div>
+          <div class="form-row">
+            <button class="btn sm" data-apply="${i}">载入</button>
+            <button class="btn sm danger" data-remove="${i}">删除</button>
+          </div>
+        </div>`).join("")}
+      </div>`, true);
+    $$("#modalBox [data-apply]").forEach((btn) => btn.addEventListener("click", () => {
+      applyConfig(loadSavedConfigs()[Number(btn.dataset.apply)].config);
+      closeModal();
+    }));
+    $$("#modalBox [data-remove]").forEach((btn) => btn.addEventListener("click", () => {
+      const rest = loadSavedConfigs();
+      rest.splice(Number(btn.dataset.remove), 1);
+      persistConfigs(rest);
+      openLoadConfig();
+    }));
+  }
+
+  function applyConfig(cfg) {
+    if (!cfg) return;
+    const ids = new Set(state.factors.map((f) => String(f.id)));
+    const factors = (cfg.factors || [])
+      .map((f) => ({ id: String(f.factor_id), weight: Number(f.weight) || 1 }))
+      .filter((f) => ids.has(f.id));
+    if (factors.length) state.btFactors = factors;
+    state.universe = new Set((cfg.codes || []).filter((c) => state.stocks.some((s) => s.code === c)));
+
+    const setVal = (sel, val) => {
+      const el = $(sel);
+      if (el && val !== undefined && val !== null) el.value = val;
+    };
+    setVal("#btStart", cfg.start);
+    setVal("#btEnd", cfg.end);
+    setVal("#btRebalance", cfg.rebalance_days);
+    setVal("#btTopN", cfg.top_n);
+    setVal("#btTopPct", cfg.top_pct);
+    setVal("#btCommission", cfg.commission_bps);
+    setVal("#btStamp", cfg.stamp_duty_bps);
+    setVal("#btSlip", cfg.slippage_bps);
+    setVal("#btWeighting", cfg.weighting);
+    setVal("#btMaxWeight", cfg.max_weight);
+    setVal("#btBenchmark", cfg.benchmark);
+    const filters = cfg.filters || {};
+    $("#filterStar").checked = filters.exclude_star !== false;
+    $("#filterBJ").checked = filters.exclude_bj !== false;
+    $("#filterLimitUp").checked = !!filters.exclude_limit_up;
+    setVal("#filterAmount", filters.min_amount);
+    setVal("#filterDays", filters.min_list_days);
+    const pre = cfg.preprocess || {};
+    $("#ppWinsor").checked = !!pre.winsorize;
+    $("#ppNeutral").checked = !!pre.neutralize;
+    $("#ppStd").checked = pre.standardize !== false;
+    $("#btLongShort").checked = !!cfg.long_short;
+
+    renderCombo();
+    renderUniverse();
+    toast("配置已载入");
   }
 
   async function runBacktest() {
@@ -881,7 +1141,7 @@
               <span class="chip">${res.universe.stocks} 只股票</span>
               <span class="chip">${cfg.rebalance_days} 日调仓</span>
               <span class="chip">${cfg.top_n > 0 ? "持仓 " + cfg.top_n : "前 " + (cfg.top_pct * 100).toFixed(0) + "%"}</span>
-              <span class="chip">成本 ${fmtNum(cfg.commission_bps, 0)} bps</span>
+              <span class="chip">佣金 ${fmtNum(cfg.commission_bps, 1)} / 印花 ${fmtNum(cfg.stamp_duty_bps || 0, 1)} / 滑点 ${fmtNum(cfg.slippage_bps || 0, 1)} bps</span>
               <span class="chip">${weightLabel}${cfg.max_weight > 0 ? " · 上限 " + cfg.max_weight + "%" : ""}</span>
               ${cfg.long_short ? `<span class="chip amber">多空</span>` : ""}
               <span class="chip green">基准 · ${benchName}</span>
@@ -890,7 +1150,10 @@
               ${factorChips}${preChips}
             </div>
           </div>
-          <button class="btn sm" id="exportCsv">导出 CSV</button>
+          <div class="form-row" style="gap:6px">
+            <button class="btn sm" id="exportCsv">导出 CSV</button>
+            <button class="btn sm" id="exportReport">导出报告</button>
+          </div>
         </div>
         <div class="perf-grid">
           ${perf.map(([k, v, cls]) => `<div class="perf"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`).join("")}
@@ -969,6 +1232,68 @@
     }
     const exportBtn = $("#exportCsv");
     if (exportBtn) exportBtn.addEventListener("click", () => exportBacktestCsv(res));
+    const reportBtn = $("#exportReport");
+    if (reportBtn) reportBtn.addEventListener("click", () => exportBacktestReport(res));
+  }
+
+  function exportBacktestReport(res) {
+    const m = res.metrics;
+    const cfg = res.config;
+    const eq = document.getElementById("equityChart");
+    const dd = document.getElementById("ddChart");
+    const eqImg = eq ? eq.toDataURL("image/png") : "";
+    const ddImg = dd ? dd.toDataURL("image/png") : "";
+    const metricRows = [
+      ["年化收益", fmtPct(m.annual_return)], ["累计收益", fmtPct(m.total_return)],
+      ["夏普比率", fmtNum(m.sharpe)], ["最大回撤", fmtPct(m.max_drawdown)],
+      ["年化波动", fmtPct(m.annual_volatility)], ["超额年化", fmtPct(m.excess_annual_return)],
+      ["Alpha", fmtPct(m.alpha)], ["Beta", fmtNum(m.beta)],
+      ["信息比率", fmtNum(m.information_ratio)], ["索提诺", fmtNum(m.sortino)],
+      ["VaR 95%", fmtPct(m.var_95)], ["CVaR 95%", fmtPct(m.cvar_95)],
+      ["年化换手", fmtNum(m.annual_turnover, 1) + "x"], ["月度胜率", fmtPct(m.monthly_win_rate, 1, false)],
+    ];
+    const factorText = (res.factor.factors || []).map((f) => `${f.label} ${(f.weight * 100).toFixed(0)}%`).join(" / ");
+    const holdingsRows = (res.holdings || []).map((h) =>
+      `<tr><td>${esc(h.date)}</td><td>${h.items.map((i) => `${esc(i.name)} ${(i.weight * 100).toFixed(1)}%`).join("，")}</td></tr>`).join("");
+    const monthlyRows = (res.monthly || []).map((x) =>
+      `<tr><td>${x.year}-${String(x.month).padStart(2, "0")}</td><td style="color:${x.return >= 0 ? "#e05666" : "#2fae7c"}">${(x.return * 100).toFixed(2)}%</td></tr>`).join("");
+    const html = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
+<title>回测报告 · ${esc(cfg.name)}</title>
+<style>
+body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:#f7f9fc;color:#1f2a37;margin:0;padding:40px}
+.wrap{max-width:960px;margin:0 auto;background:#fff;border:1px solid #e3e9f2;border-radius:12px;padding:32px 36px}
+h1{font-size:22px;margin:0 0 4px}.sub{color:#6b7c93;font-size:12px;margin-bottom:22px}
+.chips span{display:inline-block;border:1px solid #dbe4ef;border-radius:999px;padding:2px 9px;font-size:11px;color:#4b5b6f;margin:0 6px 6px 0}
+.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:18px 0}
+.card{border:1px solid #e3e9f2;border-radius:8px;padding:10px 12px}.card .k{font-size:10px;color:#7c8ba1}
+.card .v{font-size:17px;font-family:ui-monospace,monospace;margin-top:2px}
+img{width:100%;border:1px solid #e3e9f2;border-radius:8px;margin:8px 0 18px}
+h2{font-size:14px;margin:24px 0 8px}table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{border-bottom:1px solid #e8eef6;padding:6px 8px;text-align:left}th{color:#7c8ba1;font-weight:500}
+.foot{margin-top:26px;color:#93a1b3;font-size:11px}
+</style></head><body><div class="wrap">
+<h1>${esc(cfg.name)}</h1>
+<div class="sub">${esc(res.universe.start)} → ${esc(res.universe.end)} · ${res.universe.stocks} 只股票 · 基准 ${cfg.benchmark === "market" ? "全市场等权" : "股票池等权"} · 生成于 ${new Date().toLocaleString("zh-CN", { hour12: false })}</div>
+<div class="chips">${(res.factor.factors || []).map((f) => `<span>${esc(f.label)} ${(f.weight * 100).toFixed(0)}%</span>`).join("")}
+<span>${cfg.rebalance_days} 日调仓</span><span>持仓 ${cfg.top_n > 0 ? cfg.top_n : (cfg.top_pct * 100).toFixed(0) + "%"}</span>
+<span>成本 买 ${cfg.buy_cost_bps || "—"} / 卖 ${cfg.sell_cost_bps || "—"} bps</span></div>
+<div class="grid">${metricRows.map(([k, v]) => `<div class="card"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("")}</div>
+<h2>策略净值</h2>${eqImg ? `<img src="${eqImg}" alt="equity">` : ""}
+<h2>回撤曲线</h2>${ddImg ? `<img src="${ddImg}" alt="drawdown">` : ""}
+<h2>月度收益</h2><table><thead><tr><th>月份</th><th>收益</th></tr></thead><tbody>${monthlyRows}</tbody></table>
+<h2>调仓持仓</h2><table><thead><tr><th>日期</th><th>持仓</th></tr></thead><tbody>${holdingsRows}</tbody></table>
+<div class="foot">AlphaLab 自动生成 · 因子：${esc(factorText)} · 结果仅供研究，不构成投资建议。</div>
+</div></body></html>`;
+    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `report_${res.id || "latest"}.html`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    toast("回测报告已导出 HTML");
   }
 
   function exportBacktestCsv(res) {
@@ -1350,7 +1675,11 @@
     $("#corrBtn").addEventListener("click", openCorrelationModal);
     $("#previewBtn").addEventListener("click", previewFactor);
     $("#addFactorBtn").addEventListener("click", addFactorToCombo);
+    $("#icWeightBtn").addEventListener("click", autoWeightByIC);
     $$(".tpl-btn").forEach((btn) => btn.addEventListener("click", () => applyTemplate(btn.dataset.tpl)));
+    $("#signalBtn").addEventListener("click", openSignal);
+    $("#saveConfigBtn").addEventListener("click", saveCurrentConfig);
+    $("#loadConfigBtn").addEventListener("click", openLoadConfig);
     $("#runBacktestBtn").addEventListener("click", runBacktest);
     $("#optimizeBtn").addEventListener("click", runParamScan);
     $("#refreshHistory").addEventListener("click", loadHistory);

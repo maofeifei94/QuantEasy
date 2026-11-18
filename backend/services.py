@@ -521,7 +521,16 @@ def run_backtest(payload: dict) -> dict:
     rebalance, warmup = _rebalance_mask(score, valid, freq)
     top_n = int(payload.get("top_n") or 0)
     top_frac = float(payload.get("top_pct") or 0.2)
-    commission = float(payload.get("commission_bps") or 15) / 10000.0
+    commission_bps = float(payload.get("commission_bps") or 15)
+    stamp_duty_bps = float(payload.get("stamp_duty_bps") or 0)
+    slippage_bps = float(payload.get("slippage_bps") or 0)
+    if "stamp_duty_bps" not in payload and "slippage_bps" not in payload:
+        # 兼容旧配置：commission_bps 视为单边全包成本
+        stamp_duty_bps = 0.0
+        slippage_bps = 0.0
+    commission = commission_bps / 10000.0
+    stamp_duty = stamp_duty_bps / 10000.0
+    slippage = slippage_bps / 10000.0
     long_short = bool(payload.get("long_short") or False)
     benchmark_type = payload.get("benchmark") or "universe"
     weighting = payload.get("weighting") or "equal"
@@ -533,7 +542,8 @@ def run_backtest(payload: dict) -> dict:
     sim = bt_engine.run_backtest(
         score=score, close=close, valid=valid, rebalance=rebalance,
         top_frac=top_frac, top_n=top_n, long_short=long_short,
-        commission=commission, weighting=weighting,
+        commission=commission, stamp_duty=stamp_duty, slippage=slippage,
+        weighting=weighting,
         max_weight=max_weight, vol=vol,
     )
     bench = sim["benchmark"]
@@ -610,7 +620,11 @@ def run_backtest(payload: dict) -> dict:
             "rebalance_days": freq,
             "top_n": top_n,
             "top_pct": top_frac,
-            "commission_bps": commission * 10000,
+            "commission_bps": commission_bps,
+            "stamp_duty_bps": stamp_duty_bps,
+            "slippage_bps": slippage_bps,
+            "buy_cost_bps": round(commission_bps + slippage_bps, 2),
+            "sell_cost_bps": round(commission_bps + stamp_duty_bps + slippage_bps, 2),
             "long_short": long_short,
             "benchmark": benchmark_type,
             "weighting": weighting,
@@ -640,7 +654,16 @@ def optimize_backtest(payload: dict) -> dict:
                    if 1 <= int(x) <= 100})[:4]
     if not rebs or not tops:
         raise ValueError("参数扫描范围不能为空")
-    commission = float(payload.get("commission_bps") or 15) / 10000.0
+    commission_bps = float(payload.get("commission_bps") or 15)
+    stamp_duty_bps = float(payload.get("stamp_duty_bps") or 0)
+    slippage_bps = float(payload.get("slippage_bps") or 0)
+    if "stamp_duty_bps" not in payload and "slippage_bps" not in payload:
+        # 兼容旧配置：commission_bps 视为单边全包成本
+        stamp_duty_bps = 0.0
+        slippage_bps = 0.0
+    commission = commission_bps / 10000.0
+    stamp_duty = stamp_duty_bps / 10000.0
+    slippage = slippage_bps / 10000.0
     long_short = bool(payload.get("long_short") or False)
     weighting = payload.get("weighting") or "equal"
     if weighting not in ("equal", "score", "inverse_vol"):
@@ -655,7 +678,8 @@ def optimize_backtest(payload: dict) -> dict:
             sim = bt_engine.run_backtest(
                 score=score, close=data["close"], valid=valid, rebalance=rebalance,
                 top_frac=0.2, top_n=top_n, long_short=long_short,
-                commission=commission, weighting=weighting,
+                commission=commission, stamp_duty=stamp_duty, slippage=slippage,
+                weighting=weighting,
                 max_weight=max_weight, vol=vol,
             )
             m = sim["metrics"]
@@ -681,6 +705,79 @@ def optimize_backtest(payload: dict) -> dict:
             "stocks": len(data["codes"]),
             "commission_bps": commission * 10000,
             "long_short": long_short,
+        },
+    }
+
+
+# --------------------------------------------------------------------------- #
+# 最新持仓信号
+# --------------------------------------------------------------------------- #
+def latest_signal(payload: dict) -> dict:
+    """按当前因子与过滤条件生成最新交易日的目标持仓。"""
+    data, factor, score = _prepare(payload)
+    valid = _apply_filters(data, payload.get("filters"))
+    dates, codes = data["dates"], data["codes"]
+    usable = (np.isfinite(score) & valid).sum(axis=1)
+    min_stocks = max(2, min(10, len(codes)))
+    idxs = np.where(usable >= min_stocks)[0]
+    if idxs.size == 0:
+        raise ValueError("当前因子没有足够的有效值，无法生成信号")
+    t = int(idxs[-1])
+
+    row = np.where(valid[t] & np.isfinite(score[t]), score[t], -np.inf)
+    order = np.argsort(-row)
+    n_valid = int(valid[t].sum())
+    top_n = int(payload.get("top_n") or 0)
+    if top_n > 0:
+        k = min(top_n, n_valid)
+    else:
+        k = int(round(float(payload.get("top_pct") or 0.2) * n_valid))
+    k = max(1, k)
+    selected = order[:k]
+
+    weighting = payload.get("weighting") or "equal"
+    if weighting not in ("equal", "score", "inverse_vol"):
+        weighting = "equal"
+    if weighting == "score":
+        raw = (k - np.arange(k)).astype(np.float64)
+    elif weighting == "inverse_vol":
+        vol = _rolling_vol(data["returns"])[t, selected]
+        raw = 1.0 / np.maximum(vol, 1e-4)
+    else:
+        raw = np.ones(k, dtype=np.float64)
+    weights = raw / raw.sum()
+    max_weight = float(payload.get("max_weight") or 0) / 100.0
+    if max_weight > 0:
+        cap = max(max_weight, 1.0 / k)
+        for _ in range(4):
+            weights = np.minimum(weights, cap)
+            weights = weights / max(weights.sum(), 1e-12)
+
+    close = data["close"]
+    items = []
+    for rank, j in enumerate(selected):
+        prev_close = close[t - 1, j] if t > 0 else np.nan
+        change = (close[t, j] / prev_close - 1.0) if np.isfinite(prev_close) and prev_close else np.nan
+        items.append({
+            "code": codes[j],
+            "name": data["names"].get(codes[j], codes[j]),
+            "industry": data["industries"].get(codes[j], "未分类"),
+            "weight": round(float(weights[rank]), 4),
+            "score": round(float(score[t, j]), 4),
+            "close": round(float(close[t, j]), 2) if np.isfinite(close[t, j]) else None,
+            "change_pct": round(float(change) * 100, 2) if np.isfinite(change) else None,
+        })
+    items.sort(key=lambda x: -x["weight"])
+    return {
+        "as_of": dates[t],
+        "items": items,
+        "factor": {"label": factor["label"], "factors": factor["factors"],
+                   "preprocess": factor["preprocess"]},
+        "config": {
+            "weighting": weighting,
+            "top_n": k,
+            "max_weight": max_weight * 100,
+            "benchmark": payload.get("benchmark") or "universe",
         },
     }
 

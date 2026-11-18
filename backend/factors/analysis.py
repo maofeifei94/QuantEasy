@@ -128,6 +128,18 @@ def analyze(score: np.ndarray, close: np.ndarray, valid: np.ndarray,
         for y, v in sorted(year_values.items())
     ]
 
+    month_values: dict[str, list[float]] = {}
+    for i, d in enumerate(dates):
+        if np.isfinite(ic_series[i]):
+            month_values.setdefault(d[:7], []).append(float(ic_series[i]))
+    ic_monthly = [
+        {
+            "year": int(k[:4]), "month": int(k[5:7]),
+            "ic": round(float(np.mean(v)), 4), "days": len(v),
+        }
+        for k, v in sorted(month_values.items())
+    ]
+
     return {
         "horizon": horizon,
         "ic": {
@@ -138,6 +150,7 @@ def analyze(score: np.ndarray, close: np.ndarray, valid: np.ndarray,
             "series": ic_pairs,
         },
         "ic_by_year": ic_by_year,
+        "ic_monthly": ic_monthly,
         "ic_decay": ic_decay,
         "quantile_returns": quantile_returns,
         "quantile_nav": quantile_nav(score, close, valid, dates),

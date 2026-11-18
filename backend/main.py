@@ -158,6 +158,14 @@ def factor_correlation(payload: dict = Body(...)) -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/api/signal")
+def latest_signal(payload: dict = Body(...)) -> dict:
+    try:
+        return services.latest_signal(payload)
+    except (FactorError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/api/backtest/optimize")
 def optimize_backtest(payload: dict = Body(...)) -> dict:
     try:
