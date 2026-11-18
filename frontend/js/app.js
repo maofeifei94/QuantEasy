@@ -1618,6 +1618,11 @@
         <div class="chart-wrap"><canvas id="industryChart"></canvas></div>
       </div>
 
+      ${res.style_exposure ? `<div class="panel">
+        <div class="chart-title-row"><div><div class="panel-title" style="font-size:13px">风格暴露</div><div class="panel-sub">持仓在动量 / 反转 / 波动 / 流动性 / Beta 上的截面标准化暴露，正值表示偏向该风格</div></div></div>
+        <div class="chart-wrap"><canvas id="styleChart"></canvas></div>
+      </div>` : ""}
+
       <div class="panel" id="attributionPanel">
         <div class="chart-title-row"><div><div class="panel-title" style="font-size:13px">收益归因</div><div class="panel-sub">个股与行业对区间收益的累计贡献</div></div></div>
         <div class="grid-2">
@@ -1711,6 +1716,14 @@
     } else {
       const panel = $("#industryPanel");
       if (panel) panel.style.display = "none";
+    }
+
+    if (res.style_exposure) {
+      Charts.line($("#styleChart"), {
+        labels: res.style_exposure.dates,
+        series: res.style_exposure.series.map((s) => ({ name: s.name, data: s.values })),
+        height: 230, yFmt: (v) => v.toFixed(2), xFmt: shortDate, includeZero: true,
+      });
     }
 
     const attrStocks = (res.attribution && res.attribution.stocks) || [];

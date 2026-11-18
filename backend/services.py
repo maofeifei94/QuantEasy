@@ -951,6 +951,81 @@ def _extended_metrics(net: np.ndarray, bench_nav: np.ndarray,
     return out
 
 
+def _style_exposure(weights: np.ndarray, data: dict, max_points: int = 160) -> dict | None:
+    """组合在动量/反转/波动/流动性/Beta 上的截面标准化暴露时间序列。"""
+    close = data["close"]
+    returns = data["returns"]
+    amount = data["amount"]
+    T, N = close.shape
+    if T < 25 or N < 5:
+        return None
+
+    def shifted(x, k):
+        out = np.full_like(x, np.nan)
+        if k <= 0:
+            return x.copy()
+        if T > k:
+            out[k:] = x[:-k]
+        return out
+
+    mom20 = close / np.maximum(shifted(close, 20), 1e-9) - 1.0
+    rev5 = -(close / np.maximum(shifted(close, 5), 1e-9) - 1.0)
+    vol20 = _rolling_vol(returns, 20)
+    liq20 = np.log1p(np.maximum(
+        np.nanmean(np.stack([shifted(amount, k) for k in range(20)]), axis=0), 0.0
+    ))
+    market = np.nanmean(returns, axis=1)
+
+    idxs = [t for t in range(0, T, 5) if np.abs(weights[t]).sum() > 1e-9]
+    if len(idxs) > max_points:
+        idxs = idxs[:: max(1, len(idxs) // max_points)]
+
+    def zscore(row):
+        ok = np.isfinite(row)
+        if ok.sum() < 3:
+            return None
+        m = float(np.mean(row[ok]))
+        s = float(np.std(row[ok]))
+        return (row - m) / max(s, 1e-9)
+
+    names = ["动量", "短期反转", "波动率", "流动性", "Beta"]
+    series = {name: [] for name in names}
+    out_dates = []
+    for t in idxs:
+        cols = {
+            "动量": mom20[t],
+            "短期反转": rev5[t],
+            "波动率": vol20[t],
+            "流动性": liq20[t],
+        }
+        if t >= 60:
+            win = returns[t - 59: t + 1]
+            mkt = market[t - 59: t + 1]
+            okm = np.isfinite(mkt)
+            if okm.sum() >= 30 and win.shape[0] == 60:
+                x = mkt - np.nanmean(mkt)
+                denom = float(np.sum(x ** 2))
+                if denom > 1e-12:
+                    wm = np.nanmean(win, axis=0)
+                    cov = np.nansum((win - wm) * x[:, None], axis=0) / denom
+                    cols["Beta"] = cov
+        w_row = weights[t]
+        gross = float(np.abs(w_row).sum())
+        out_dates.append(data["dates"][t])
+        for name in names:
+            z = zscore(cols[name]) if name in cols else None
+            if z is None:
+                series[name].append(None)
+            else:
+                series[name].append(round(float(np.sum(w_row * np.nan_to_num(z)) / gross), 3))
+    if not out_dates:
+        return None
+    return {
+        "dates": out_dates,
+        "series": [{"name": name, "values": series[name]} for name in names],
+    }
+
+
 def _industry_exposure(weights: np.ndarray, rebalance: np.ndarray,
                        codes: list[str], industries: dict[str, str]) -> list[dict]:
     idxs = [i for i in range(len(rebalance))
@@ -1125,6 +1200,7 @@ def run_backtest(payload: dict) -> dict:
         "annual_returns_benchmark": _annual_returns(dates, np.asarray(bench)),
         "holdings": _holdings(dates, w, rebalance, data["names"], codes),
         "industry_exposure": _industry_exposure(w, rebalance, codes, data["industries"]),
+        "style_exposure": _style_exposure(w, data),
         "attribution": attribution,
         "brinson": brinson,
         "bootstrap": bootstrap,
