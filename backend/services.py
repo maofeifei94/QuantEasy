@@ -1764,8 +1764,13 @@ def _screen_specs(data: dict, conds: list, max_conds: int = 6) -> list[dict]:
         except (TypeError, ValueError):
             weight = 1.0
         weight = max(-5.0, min(weight, 5.0))
+        try:
+            group = int(c.get("group") or 0)
+        except (TypeError, ValueError):
+            group = 0
+        group = max(0, min(group, 2))
         specs.append({"spec": spec, "raw": raw, "mode": mode, "value": value,
-                      "scope": scope, "weight": weight})
+                      "scope": scope, "weight": weight, "group": group})
     return specs
 
 
@@ -1774,14 +1779,18 @@ def _screen_selection(data: dict, specs: list[dict], valid: np.ndarray,
     """在交易日 t 上执行全部条件，返回命中掩码、综合分与条件明细。"""
     N = len(data["codes"])
     valid_t = valid[t]
-    mask = valid_t.copy()
+    group_mask: dict[int, np.ndarray] = {}
     passes: list[np.ndarray] = []
     rows: list[np.ndarray] = []
     zs: list[np.ndarray] = []
     detail: list[dict] = []
     for item in specs:
         row = item["raw"][t]
-        base = (valid_t if logic == "or" else mask) & np.isfinite(row)
+        grp = int(item.get("group") or 0)
+        if logic == "or":
+            base = valid_t & np.isfinite(row)
+        else:
+            base = group_mask.get(grp, valid_t.copy()) & np.isfinite(row)
         if not base.any():
             return {"mask": np.zeros(N, dtype=bool), "score": np.zeros(N),
                     "rows": rows, "cond_detail": detail,
@@ -1817,15 +1826,21 @@ def _screen_selection(data: dict, specs: list[dict], valid: np.ndarray,
             "mode": mode,
             "value": value,
             "weight": item["weight"],
+            "group": grp,
             "passed": int(passed.sum()),
         })
-        passes.append(passed)
         if logic == "and":
-            mask = passed
+            group_mask[grp] = passed
+        else:
+            passes.append(passed)
+    mask = np.zeros(N, dtype=bool)
     if logic == "or":
-        mask = np.zeros(N, dtype=bool)
         for p in passes:
             mask |= p
+    else:
+        # 组内「且」、组间「或」；单组时等价于全部条件「且」
+        for gm in group_mask.values():
+            mask |= gm
     score = np.nansum(np.stack(zs), axis=0)
     return {"mask": mask, "score": score, "rows": rows,
             "cond_detail": detail, "failed": None}

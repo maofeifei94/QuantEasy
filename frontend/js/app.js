@@ -2553,6 +2553,11 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
           <option value="all" ${(c.scope || "all") === "all" ? "selected" : ""}>全市场</option>
           <option value="industry" ${c.scope === "industry" ? "selected" : ""}>行业内</option>
         </select>
+        <select class="scr-group" data-i="${i}" style="width:72px" title="条件分组：组内为「且」，组间为「或」">
+          <option value="0" ${!c.group ? "selected" : ""}>组 1</option>
+          <option value="1" ${c.group === 1 ? "selected" : ""}>组 2</option>
+          <option value="2" ${c.group === 2 ? "selected" : ""}>组 3</option>
+        </select>
         <input type="number" class="scr-value" data-i="${i}" value="${c.value}" step="1" style="width:92px">
         <span class="hint" data-unit="${i}">${c.mode.startsWith("rank") ? "%" : "值"}</span>
         <input type="number" class="scr-weight" data-i="${i}" value="${c.weight == null ? 1 : c.weight}" step="0.5" min="-5" max="5" title="综合分权重（仅影响排序）" style="width:74px">
@@ -2582,6 +2587,9 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
     }));
     $$("#scrConds .scr-scope").forEach((el) => el.addEventListener("change", () => {
       state.screenerConds[+el.dataset.i].scope = el.value;
+    }));
+    $$("#scrConds .scr-group").forEach((el) => el.addEventListener("change", () => {
+      state.screenerConds[+el.dataset.i].group = Number(el.value) || 0;
     }));
     $$("#scrConds .scr-value").forEach((el) => el.addEventListener("input", () => {
       state.screenerConds[+el.dataset.i].value = Number(el.value) || 0;
@@ -2613,6 +2621,7 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
         conditions: state.screenerConds.map((c) => ({
           factor_id: c.factorId, mode: c.mode, value: c.value,
           scope: c.scope || "all", weight: c.weight == null ? 1 : c.weight,
+          group: c.group || 0,
         })),
         logic: $("#scrLogic").value,
         select_mode: $("#scrMode").value || "conditions",
@@ -2682,6 +2691,7 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
         conditions: state.screenerConds.map((c) => ({
           factor_id: c.factorId, mode: c.mode, value: c.value,
           scope: c.scope || "all", weight: c.weight == null ? 1 : c.weight,
+          group: c.group || 0,
         })),
         logic: $("#scrLogic").value,
         select_mode: $("#scrMode").value || "conditions",
@@ -2751,9 +2761,11 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
     const indText = indTop.slice(0, 4).map(([k, v]) => `${k} ${v}`).join(" · ") +
       (indTop.length > 4 ? ` · 其他 ${indTop.length - 4} 个行业` : "");
     const scoreMode = res.select_mode === "score";
+    const groups = new Set((res.conditions || []).map((c) => c.group || 0));
+    const groupText = !scoreMode && groups.size > 1 ? ` · ${groups.size} 组（组内且 / 组间或）` : "";
     $("#scrMeta").textContent = `${res.as_of} · 股票池 ${res.universe_size} 只 · ` +
       `${scoreMode ? "候选" : "命中"} ${res.count} 只 · 显示 ${res.returned} 只 · ` +
-      (scoreMode ? "综合分排序" : `逻辑${res.logic === "or" ? "或" : "且"}`) +
+      (scoreMode ? "综合分排序" : `逻辑${res.logic === "or" ? "或" : "且"}${groupText}`) +
       (res.confirm ? ` · 确认 ${res.confirm.min}/${res.confirm.days} 日` : "") +
       (res.industry_limit > 0 ? ` · 每行业≤${res.industry_limit} 只` : "") +
       (indText ? ` · ${indText}` : "");
