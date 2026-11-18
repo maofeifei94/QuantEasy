@@ -664,8 +664,11 @@
       });
     }
 
+    const halfLife = res.ic_half_life
+      ? ` · IC 半衰期约 ${res.ic_half_life} 日`
+      : (Math.abs((res.ic || {}).mean || 0) > 0.001 ? " · IC 20 日内未见明显衰减" : "");
     const decayBlock = document.createElement("div");
-    decayBlock.innerHTML = `<div style="margin-top:18px"><div class="chart-title-row"><div><div class="panel-title" style="font-size:13px">IC 衰减</div><div class="panel-sub">不同预测窗口的平均 IC</div></div></div><div class="chart-wrap"><canvas></canvas></div></div>`;
+    decayBlock.innerHTML = `<div style="margin-top:18px"><div class="chart-title-row"><div><div class="panel-title" style="font-size:13px">IC 衰减</div><div class="panel-sub">不同预测窗口的平均 IC${halfLife}</div></div></div><div class="chart-wrap"><canvas></canvas></div></div>`;
     box.querySelector("#decayBlock").appendChild(decayBlock);
     Charts.bar(decayBlock.querySelector("canvas"), {
       labels: res.ic_decay.map((d) => d.horizon + "日"),
@@ -709,6 +712,30 @@
         series,
         height: 240, yFmt: (v) => v.toFixed(0) + "%", xFmt: shortDate,
       });
+
+      if (qnav.metrics && qnav.metrics.length) {
+        const lm = qnav.long_short_metrics || null;
+        const mBlock = document.createElement("div");
+        mBlock.innerHTML = `
+          <div class="panel-sub" style="margin:12px 0 6px">
+            分层组合绩效（日频调仓）${lm ? ` · 多空年化 ${fmtPct(lm.annualized, 1)} · 夏普 ${fmtNum(lm.sharpe)} · 最大回撤 ${fmtPct(lm.max_drawdown, 1)}` : ""}
+          </div>
+          <div class="table-wrap" style="max-height:220px">
+            <table>
+              <thead><tr><th>分组</th><th style="text-align:right">年化收益</th>
+                <th style="text-align:right">夏普</th><th style="text-align:right">最大回撤</th>
+                <th style="text-align:right">胜率</th></tr></thead>
+              <tbody>${qnav.metrics.map((m) => `<tr>
+                <td>${esc(m.group)}</td>
+                <td style="text-align:right" class="num-mono ${colorClass(m.annualized)}">${fmtPct(m.annualized, 1)}</td>
+                <td style="text-align:right" class="num-mono">${fmtNum(m.sharpe)}</td>
+                <td style="text-align:right" class="num-mono">${fmtPct(m.max_drawdown, 1)}</td>
+                <td style="text-align:right" class="num-mono">${fmtPct(m.win_rate, 1, false)}</td>
+              </tr>`).join("")}</tbody>
+            </table>
+          </div>`;
+        qnavBlock.appendChild(mBlock);
+      }
     }
 
     const sampleBlock = document.createElement("div");

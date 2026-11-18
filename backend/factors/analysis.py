@@ -91,6 +91,15 @@ def analyze(score: np.ndarray, close: np.ndarray, valid: np.ndarray,
             "ic": round(float(s.mean()), 4) if s.size else 0.0,
         })
 
+    # IC 半衰期：|IC| 首次降到 1 日 IC 一半以下所需的预测窗口（20 日内未衰减则为 None）
+    half_life = None
+    base_ic = abs(ic_decay[0]["ic"]) if ic_decay else 0.0
+    if base_ic > 1e-6:
+        for row in ic_decay:
+            if abs(row["ic"]) <= base_ic * 0.5:
+                half_life = row["horizon"]
+                break
+
     # 分位组合：每个截面按因子值分 n_groups 组，统计未来 horizon 日平均收益
     groups = [[] for _ in range(n_groups)]
     for t in range(score.shape[0]):
@@ -199,6 +208,7 @@ def analyze(score: np.ndarray, close: np.ndarray, valid: np.ndarray,
         "ic_monthly": ic_monthly,
         "industry_ic": industry_ic,
         "ic_decay": ic_decay,
+        "ic_half_life": half_life,
         "quantile_returns": quantile_returns,
         "quantile_nav": quantile_nav(score, close, valid, dates, n_groups),
         "n_groups": n_groups,
@@ -233,6 +243,27 @@ def factor_stability(score: np.ndarray, valid: np.ndarray,
             "turnover": round(max(0.0, 1.0 - mean), 3),
         })
     return out
+
+
+def _series_metrics(rets: np.ndarray) -> dict:
+    """由日收益序列计算年化收益、夏普、最大回撤与胜率。"""
+    r = np.asarray(rets, dtype=np.float64)
+    r = r[np.isfinite(r)]
+    if r.size < 2:
+        return {"annualized": 0.0, "sharpe": 0.0, "max_drawdown": 0.0, "win_rate": 0.0}
+    nav = np.cumprod(1.0 + r)
+    curve = np.concatenate([[1.0], nav])
+    peak = np.maximum.accumulate(curve)
+    drawdown = curve / np.maximum(peak, 1e-12) - 1.0
+    ann = float(curve[-1] ** (252.0 / r.size) - 1.0)
+    std = float(r.std(ddof=1))
+    sharpe = float(r.mean() / std * np.sqrt(252.0)) if std > 1e-12 else 0.0
+    return {
+        "annualized": round(ann, 4),
+        "sharpe": round(sharpe, 3),
+        "max_drawdown": round(float(drawdown.min()), 4),
+        "win_rate": round(float((r > 0).mean()), 3),
+    }
 
 
 def quantile_nav(score: np.ndarray, close: np.ndarray, valid: np.ndarray,
@@ -272,6 +303,11 @@ def quantile_nav(score: np.ndarray, close: np.ndarray, valid: np.ndarray,
             for g in range(n_groups)
         ],
         "long_short": [round(float(ls_nav[i]), 4) for i in idx],
+        "metrics": [
+            {"group": f"Q{g + 1}", **_series_metrics(group_rets[g])}
+            for g in range(n_groups)
+        ],
+        "long_short_metrics": _series_metrics(group_rets[-1] - group_rets[0]),
     }
 
 
