@@ -1646,11 +1646,14 @@ def screen_stocks(payload: dict) -> dict:
         mode = c.get("mode") or "rank_top"
         if mode not in ("rank_top", "rank_bottom", "gte", "lte"):
             mode = "rank_top"
+        scope = c.get("scope") or "all"
+        if scope not in ("all", "industry"):
+            scope = "all"
         try:
             value = float(c.get("value"))
         except (TypeError, ValueError):
             raise ValueError(f"条件「{spec['label']}」的阈值无效")
-        specs.append({"spec": spec, "raw": raw, "mode": mode, "value": value})
+        specs.append({"spec": spec, "raw": raw, "mode": mode, "value": value, "scope": scope})
 
     base_counts = (np.isfinite(specs[0]["raw"]) & valid).sum(axis=1)
     date = payload.get("date")
@@ -1681,10 +1684,19 @@ def screen_stocks(payload: dict) -> dict:
         if mode in ("rank_top", "rank_bottom"):
             pct = max(0.1, min(value, 100.0))
             key = np.where(base, -row, np.inf) if mode == "rank_top" else np.where(base, row, np.inf)
-            order = np.argsort(key)
-            n = int(base.sum())
             ranks = np.full(N, np.inf)
-            ranks[order[:n]] = (np.arange(n) + 1.0) / n
+            if item["scope"] == "industry":
+                ind = np.asarray(data["industry_idx"])
+                for g in np.unique(ind[base]):
+                    pos = np.where(base & (ind == g))[0]
+                    order = pos[np.argsort(key[pos])]
+                    n = len(order)
+                    if n:
+                        ranks[order] = (np.arange(n) + 1.0) / n
+            else:
+                order = np.argsort(key)
+                n = int(base.sum())
+                ranks[order[:n]] = (np.arange(n) + 1.0) / n
             passed = base & (ranks <= pct / 100.0)
         else:
             passed = base & ((row >= value) if mode == "gte" else (row <= value))

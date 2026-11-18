@@ -2191,6 +2191,10 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
         <span class="hint" style="min-width:38px">条件 ${i + 1}</span>
         <select class="scr-factor" data-i="${i}" style="min-width:190px">${opts(c.factorId)}</select>
         <select class="scr-mode" data-i="${i}" style="width:112px">${Object.entries(SCREEN_MODES).map(([v, t]) => `<option value="${v}" ${c.mode === v ? "selected" : ""}>${t}</option>`).join("")}</select>
+        <select class="scr-scope" data-i="${i}" style="width:100px">
+          <option value="all" ${(c.scope || "all") === "all" ? "selected" : ""}>全市场</option>
+          <option value="industry" ${c.scope === "industry" ? "selected" : ""}>行业内</option>
+        </select>
         <input type="number" class="scr-value" data-i="${i}" value="${c.value}" step="1" style="width:92px">
         <span class="hint" data-unit="${i}">${c.mode.startsWith("rank") ? "%" : "值"}</span>
         <button class="icon-btn" data-del="${i}" title="删除条件">✕</button>
@@ -2204,6 +2208,9 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
       state.screenerConds[i].mode = el.value;
       const unit = document.querySelector(`#scrConds [data-unit="${i}"]`);
       if (unit) unit.textContent = el.value.startsWith("rank") ? "%" : "值";
+    }));
+    $$("#scrConds .scr-scope").forEach((el) => el.addEventListener("change", () => {
+      state.screenerConds[+el.dataset.i].scope = el.value;
     }));
     $$("#scrConds .scr-value").forEach((el) => el.addEventListener("input", () => {
       state.screenerConds[+el.dataset.i].value = Number(el.value) || 0;
@@ -2229,7 +2236,7 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
           min_amount: (Number($("#scrAmount").value) || 0) * 10000,
         },
         conditions: state.screenerConds.map((c) => ({
-          factor_id: c.factorId, mode: c.mode, value: c.value,
+          factor_id: c.factorId, mode: c.mode, value: c.value, scope: c.scope || "all",
         })),
       };
       const res = await api("/api/screener", { method: "POST", body: payload });
