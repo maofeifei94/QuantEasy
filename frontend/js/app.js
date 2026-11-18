@@ -1129,6 +1129,7 @@
       trade_constraints: $("#filterTrade").checked,
       stop_loss_pct: Number($("#btStopLoss").value) || 0,
       take_profit_pct: Number($("#btTakeProfit").value) || 0,
+      trailing_stop_pct: Number($("#btTrailingStop").value) || 0,
       rebalance_days: Number($("#btRebalance").value),
       rebalance_mode: $("#btRebalanceMode").value,
       rebalance_weekday: Number($("#btRebalanceWeekday").value) || 0,
@@ -1366,6 +1367,7 @@
     setVal("#btOOS", cfg.oos_split || 0);
     setVal("#btStopLoss", cfg.stop_loss_pct || 0);
     setVal("#btTakeProfit", cfg.take_profit_pct || 0);
+    setVal("#btTrailingStop", cfg.trailing_stop_pct || 0);
     const filters = cfg.filters || {};
     $("#filterStar").checked = filters.exclude_star !== false;
     $("#filterBJ").checked = filters.exclude_bj !== false;
@@ -1597,6 +1599,7 @@
               ${cfg.trade_constraints ? `<span class="chip amber">涨跌停/停牌限制</span>` : ""}
               ${cfg.stop_loss_pct > 0 ? `<span class="chip amber">止损 ${fmtNum(cfg.stop_loss_pct, 0)}%</span>` : ""}
               ${cfg.take_profit_pct > 0 ? `<span class="chip">止盈 ${fmtNum(cfg.take_profit_pct, 0)}%</span>` : ""}
+              ${cfg.trailing_stop_pct > 0 ? `<span class="chip amber">移动止损 ${fmtNum(cfg.trailing_stop_pct, 0)}%</span>` : ""}
               <span class="chip green">基准 · ${benchName}</span>
             </div>
             <div class="factor-meta" style="margin:7px 0 0">

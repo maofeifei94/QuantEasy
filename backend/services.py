@@ -1253,6 +1253,7 @@ def run_backtest(payload: dict) -> dict:
     trade_constraints = bool(payload.get("trade_constraints"))
     stop_loss = max(0.0, min(float(payload.get("stop_loss_pct") or 0), 50)) / 100.0
     take_profit = max(0.0, min(float(payload.get("take_profit_pct") or 0), 200)) / 100.0
+    trailing_stop = max(0.0, min(float(payload.get("trailing_stop_pct") or 0), 50)) / 100.0
     industry_idx, industry_cap, n_industries = _industry_cap_args(payload, data)
     min_hold_days, turnover_cap = _trade_friction_args(payload)
     buy_block = sell_block = None
@@ -1270,7 +1271,7 @@ def run_backtest(payload: dict) -> dict:
         max_weight=max_weight, vol=vol, timing=timing,
         buy_block=buy_block, sell_block=sell_block, constraints=trade_constraints,
         weight_override=weight_override, use_override=use_override,
-        stop_loss=stop_loss, take_profit=take_profit,
+        stop_loss=stop_loss, take_profit=take_profit, trailing_stop=trailing_stop,
         industry_idx=industry_idx, industry_cap=industry_cap, n_industries=n_industries,
         min_hold_days=min_hold_days, turnover_cap=turnover_cap,
     )
@@ -1423,6 +1424,7 @@ def run_backtest(payload: dict) -> dict:
             "trade_constraints": trade_constraints,
             "stop_loss_pct": stop_loss * 100,
             "take_profit_pct": take_profit * 100,
+            "trailing_stop_pct": trailing_stop * 100,
             "oos_split": split,
             "filters": payload.get("filters") or {},
             "preprocess": factor["preprocess"],
@@ -1471,6 +1473,7 @@ def optimize_backtest(payload: dict) -> dict:
     trade_constraints = bool(payload.get("trade_constraints"))
     stop_loss = max(0.0, min(float(payload.get("stop_loss_pct") or 0), 50)) / 100.0
     take_profit = max(0.0, min(float(payload.get("take_profit_pct") or 0), 200)) / 100.0
+    trailing_stop = max(0.0, min(float(payload.get("trailing_stop_pct") or 0), 50)) / 100.0
     industry_idx, industry_cap, n_industries = _industry_cap_args(payload, data)
     min_hold_days, turnover_cap = _trade_friction_args(payload)
     buy_block = sell_block = None
@@ -1499,7 +1502,7 @@ def optimize_backtest(payload: dict) -> dict:
                 max_weight=max_weight, vol=vol, timing=timing,
                 buy_block=buy_block, sell_block=sell_block, constraints=trade_constraints,
                 weight_override=override, use_override=use_override,
-                stop_loss=stop_loss, take_profit=take_profit,
+                stop_loss=stop_loss, take_profit=take_profit, trailing_stop=trailing_stop,
                 industry_idx=industry_idx, industry_cap=industry_cap, n_industries=n_industries,
                 min_hold_days=min_hold_days, turnover_cap=turnover_cap,
             )
@@ -1761,6 +1764,7 @@ def batch_backtest(payload: dict) -> dict:
     trade_constraints = bool(payload.get("trade_constraints"))
     stop_loss = max(0.0, min(float(payload.get("stop_loss_pct") or 0), 50)) / 100.0
     take_profit = max(0.0, min(float(payload.get("take_profit_pct") or 0), 200)) / 100.0
+    trailing_stop = max(0.0, min(float(payload.get("trailing_stop_pct") or 0), 50)) / 100.0
     industry_idx, industry_cap, n_industries = _industry_cap_args(payload, data)
     min_hold_days, turnover_cap = _trade_friction_args(payload)
     reb_mode, reb_weekday, reb_month_day = _rebalance_args(payload)
@@ -1795,7 +1799,7 @@ def batch_backtest(payload: dict) -> dict:
                 weighting=weighting, max_weight=max_weight, vol=vol, timing=timing,
                 buy_block=buy_block, sell_block=sell_block, constraints=trade_constraints,
                 weight_override=override, use_override=use_override,
-                stop_loss=stop_loss, take_profit=take_profit,
+                stop_loss=stop_loss, take_profit=take_profit, trailing_stop=trailing_stop,
                 industry_idx=industry_idx, industry_cap=industry_cap, n_industries=n_industries,
                 min_hold_days=min_hold_days, turnover_cap=turnover_cap,
             )
@@ -1859,6 +1863,7 @@ def cost_sensitivity(payload: dict) -> dict:
         sell_block = (rets <= -0.095) | (volume <= 0)
     stop_loss = max(0.0, min(float(payload.get("stop_loss_pct") or 0), 50)) / 100.0
     take_profit = max(0.0, min(float(payload.get("take_profit_pct") or 0), 200)) / 100.0
+    trailing_stop = max(0.0, min(float(payload.get("trailing_stop_pct") or 0), 50)) / 100.0
     industry_idx, industry_cap, n_industries = _industry_cap_args(payload, data)
 
     levels = [0, 5, 10, 15, 20, 30]
@@ -1870,7 +1875,7 @@ def cost_sensitivity(payload: dict) -> dict:
             commission=bps / 10000.0, stamp_duty=0.0, slippage=0.0,
             weighting=weighting, max_weight=max_weight, vol=vol, timing=timing,
             buy_block=buy_block, sell_block=sell_block, constraints=trade_constraints,
-            stop_loss=stop_loss, take_profit=take_profit,
+            stop_loss=stop_loss, take_profit=take_profit, trailing_stop=trailing_stop,
             industry_idx=industry_idx, industry_cap=industry_cap, n_industries=n_industries,
             min_hold_days=min_hold_days, turnover_cap=turnover_cap,
         )

@@ -95,8 +95,8 @@ def _target_weights(
 
 @partial(jax.jit, static_argnames=(
     "top_n", "long_short", "weighting", "max_weight", "constraints",
-    "use_override", "stop_loss", "take_profit", "industry_cap", "n_industries",
-    "min_hold", "turnover_cap",
+    "use_override", "stop_loss", "take_profit", "trailing_stop",
+    "industry_cap", "n_industries", "min_hold", "turnover_cap",
 ))
 def _simulate(
     score: jnp.ndarray,
@@ -120,6 +120,7 @@ def _simulate(
     use_override: bool,
     stop_loss: float,
     take_profit: float,
+    trailing_stop: float,
     industry_idx: jnp.ndarray,
     industry_cap: float,
     n_industries: int,
@@ -137,25 +138,31 @@ def _simulate(
             industry_idx, industry_cap, n_industries,
         )
 
-    use_stop = stop_loss > 0 or take_profit > 0
+    use_stop = stop_loss > 0 or take_profit > 0 or trailing_stop > 0
 
     def fill(state, inputs):
-        w_prev, entry, age = state
+        w_prev, entry, age, peak = state
         tgt, rb, bb, sb, px = inputs
         if use_stop:
-            has = (w_prev > 1e-9) & (entry > 0) & (~sb)
+            held = w_prev > 1e-9
+            peak_upd = jnp.where(held, jnp.maximum(peak, px), 0.0)
+            has = held & (entry > 0) & (~sb)
             ret = jnp.where(entry > 0, px / jnp.maximum(entry, 1e-9) - 1.0, 0.0)
+            trail_ret = jnp.where(peak_upd > 0, px / jnp.maximum(peak_upd, 1e-9) - 1.0, 0.0)
             hit = has & (
                 (ret <= -stop_loss) |
-                ((take_profit > 0) & (ret >= take_profit))
+                ((take_profit > 0) & (ret >= take_profit)) |
+                ((trailing_stop > 0) & (trail_ret <= -trailing_stop))
             )
             w_stop = jnp.where(hit, 0.0, w_prev)
             entry_stop = jnp.where(hit, 0.0, entry)
+            peak_stop = jnp.where(hit, 0.0, peak_upd)
             tgt_adj = jnp.where(hit, 0.0, tgt)
         else:
             hit = jnp.zeros(N, dtype=bool)
             w_stop = w_prev
             entry_stop = entry
+            peak_stop = peak
             tgt_adj = tgt
 
         desired = jnp.where(rb, tgt_adj, w_stop)
@@ -201,10 +208,11 @@ def _simulate(
         else:
             new_entry = entry
         new_age = jnp.where(jnp.abs(desired) > 1e-9, age + 1.0, 0.0)
-        return (desired, new_entry, new_age), desired
+        new_peak = jnp.where(jnp.abs(desired) > 1e-9, peak_stop, 0.0)
+        return (desired, new_entry, new_age, new_peak), desired
 
     _, W = jax.lax.scan(
-        fill, (jnp.zeros(N), jnp.zeros(N), jnp.zeros(N)),
+        fill, (jnp.zeros(N), jnp.zeros(N), jnp.zeros(N), jnp.zeros(N)),
         (target, rebalance, buy_block, sell_block, close),
     )
 
@@ -285,6 +293,7 @@ def run_backtest(
     use_override: bool = False,
     stop_loss: float = 0.0,
     take_profit: float = 0.0,
+    trailing_stop: float = 0.0,
     industry_idx: np.ndarray | None = None,
     industry_cap: float = 0.0,
     n_industries: int = 0,
@@ -313,7 +322,7 @@ def run_backtest(
         float(stamp_duty), float(slippage),
         str(weighting), float(max_weight), vol_j, timing_j,
         buy_j, sell_j, bool(constraints), override_j, bool(use_override),
-        float(stop_loss), float(take_profit),
+        float(stop_loss), float(take_profit), float(trailing_stop),
         ind_j, float(industry_cap), int(n_industries),
         int(min_hold_days), float(turnover_cap),
     )
