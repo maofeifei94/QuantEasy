@@ -254,6 +254,8 @@ def quantile_nav(score: np.ndarray, close: np.ndarray, valid: np.ndarray,
 
     navs = np.cumprod(1.0 + group_rets, axis=1)
     navs = np.concatenate([np.ones((n_groups, 1)), navs], axis=1)
+    ls_raw = navs[-1] / np.maximum(navs[0], 1e-9)
+    ls_nav = ls_raw / ls_raw[0]
     step = max(1, T // 320)
     idx = list(range(0, T, step))
     if T - 1 not in idx:
@@ -264,6 +266,7 @@ def quantile_nav(score: np.ndarray, close: np.ndarray, valid: np.ndarray,
             {"group": f"Q{g + 1}", "nav": [round(float(navs[g, i]), 4) for i in idx]}
             for g in range(n_groups)
         ],
+        "long_short": [round(float(ls_nav[i]), 4) for i in idx],
     }
 
 

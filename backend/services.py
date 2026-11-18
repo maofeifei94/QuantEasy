@@ -208,6 +208,44 @@ def _resolve_factor_specs(payload: dict) -> list[dict]:
     return specs
 
 
+STYLE_EXPRESSIONS = (
+    "close / ts_delay(close, 20) - 1",
+    "-ts_std(returns, 20)",
+    "volume / ts_mean(volume, 20)",
+)
+
+
+def _residualize(y: np.ndarray, x: np.ndarray) -> np.ndarray:
+    """截面回归残差化：y 对 x 逐日回归后取残差。"""
+    y = np.asarray(y, dtype=np.float64)
+    x = np.asarray(x, dtype=np.float64)
+    valid = np.isfinite(y) & np.isfinite(x)
+    cnt = np.maximum(valid.sum(axis=1, keepdims=True), 1)
+    ym = np.where(valid, y, 0.0).sum(axis=1, keepdims=True) / cnt
+    xm = np.where(valid, x, 0.0).sum(axis=1, keepdims=True) / cnt
+    yc = np.where(valid, y - ym, 0.0)
+    xc = np.where(valid, x - xm, 0.0)
+    var = (xc * xc).sum(axis=1, keepdims=True) / cnt
+    cov = (xc * yc).sum(axis=1, keepdims=True) / cnt
+    beta = np.where(var > 1e-12, cov / np.maximum(var, 1e-12), 0.0)
+    return np.where(valid, y - beta * (x - xm), y)
+
+
+def _orthogonalize(score: np.ndarray, data: dict) -> np.ndarray:
+    """对动量/波动/量比风格因子做正交化。"""
+    out = np.asarray(score, dtype=np.float64)
+    for expr in STYLE_EXPRESSIONS:
+        try:
+            base = np.asarray(compute(expr, data))
+            base = np.asarray(pre_mod.apply_preprocess(
+                base, data, {"standardize": True}, force_standardize=True
+            ))
+        except Exception:
+            continue
+        out = _residualize(out, base)
+    return out
+
+
 def _prepare(payload: dict):
     codes = payload.get("codes") or None
     if isinstance(codes, str):
@@ -228,6 +266,8 @@ def _prepare(payload: dict):
         scored = pre_mod.apply_preprocess(
             raw * spec["direction"], data, options, force_standardize=multi
         )
+        if options.get("orthogonalize"):
+            scored = _orthogonalize(np.asarray(scored), data)
         components.append(np.asarray(scored))
 
     if multi:
@@ -257,6 +297,7 @@ def _prepare(payload: dict):
             "winsorize": bool(options.get("winsorize")),
             "neutralize": bool(options.get("neutralize")),
             "standardize": bool(options.get("standardize")) or multi,
+            "orthogonalize": bool(options.get("orthogonalize")),
         },
     }
     return data, factor, score

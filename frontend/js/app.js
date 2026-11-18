@@ -590,14 +590,24 @@
       qnavBlock.innerHTML = chartBlock("分层组合净值", "按因子值五等分，每日调仓等权持有 · 起点归一");
       box.querySelector("#qnavBlock").appendChild(qnavBlock);
       const palette = ["#6aa9ff", "#59c3c3", "#3ddc97", "#f5b56b", "#ff6b7a"];
+      const series = qnav.groups.map((g, i) => ({
+        name: g.group,
+        color: palette[i % palette.length],
+        data: g.nav.map((v) => (v - 1) * 100),
+        width: g.group === "Q5" ? 2.1 : 1.5,
+      }));
+      if (qnav.long_short && qnav.long_short.length) {
+        series.push({
+          name: "Q5-Q1 多空",
+          color: "#e8eef7",
+          data: qnav.long_short.map((v) => (v - 1) * 100),
+          dash: [4, 3],
+          width: 2,
+        });
+      }
       Charts.line(qnavBlock.querySelector("canvas"), {
         labels: qnav.dates,
-        series: qnav.groups.map((g, i) => ({
-          name: g.group,
-          color: palette[i % palette.length],
-          data: g.nav.map((v) => (v - 1) * 100),
-          width: g.group === "Q5" ? 2.1 : 1.5,
-        })),
+        series,
         height: 240, yFmt: (v) => v.toFixed(0) + "%", xFmt: shortDate,
       });
     }
@@ -981,6 +991,7 @@
         winsorize: $("#ppWinsor").checked,
         neutralize: $("#ppNeutral").checked,
         standardize: $("#ppStd").checked,
+        orthogonalize: $("#ppOrtho").checked,
       },
       filters: {
         exclude_star: $("#filterStar").checked,
@@ -1231,6 +1242,7 @@
     $("#ppWinsor").checked = !!pre.winsorize;
     $("#ppNeutral").checked = !!pre.neutralize;
     $("#ppStd").checked = pre.standardize !== false;
+    $("#ppOrtho").checked = !!pre.orthogonalize;
     $("#btLongShort").checked = !!cfg.long_short;
 
     renderCombo();
@@ -1333,6 +1345,7 @@
     const cfg = res.config;
     const navPct = res.nav.map((v) => (v - 1) * 100);
     const benchPct = res.benchmark.map((v) => (v - 1) * 100);
+    const excessPct = res.nav.map((v, i) => res.benchmark[i] ? (v / res.benchmark[i] - 1) * 100 : null);
     const ddPct = res.drawdown.map((v) => v * 100);
 
     const perf = [
@@ -1364,6 +1377,7 @@
       pre.winsorize ? "去极值" : "",
       pre.neutralize ? "行业中性" : "",
       pre.standardize ? "标准化" : "",
+      pre.orthogonalize ? "风格正交" : "",
     ].filter(Boolean).map((p) => `<span class="chip green">${p}</span>`).join("");
     const benchName = cfg.benchmark_name || (cfg.benchmark === "market"
       ? "全市场等权"
@@ -1527,6 +1541,7 @@
       series: [
         { name: "策略", data: navPct, color: "#3ddc97", fill: true },
         { name: benchName, data: benchPct, color: "#6aa9ff", dash: [5, 4], width: 1.3 },
+        { name: "超额(策略/基准)", data: excessPct, color: "#f5b56b", dash: [3, 3], width: 1.2 },
       ],
       height: 300, yFmt: (v) => v.toFixed(0) + "%", xFmt: shortDate,
     });
@@ -1599,6 +1614,12 @@
       `<tr><td>${esc(h.date)}</td><td>${h.items.map((i) => `${esc(i.name)} ${(i.weight * 100).toFixed(1)}%`).join("，")}</td></tr>`).join("");
     const monthlyRows = (res.monthly || []).map((x) =>
       `<tr><td>${x.year}-${String(x.month).padStart(2, "0")}</td><td style="color:${x.return >= 0 ? "#e05666" : "#2fae7c"}">${(x.return * 100).toFixed(2)}%</td></tr>`).join("");
+    const annualRows = (res.annual_returns || []).map((a) =>
+      `<tr><td>${a.year}</td><td style="color:${a.return >= 0 ? "#e05666" : "#2fae7c"}">${(a.return * 100).toFixed(2)}%</td></tr>`).join("");
+    const brinsonRows = res.brinson ? res.brinson.industries.map((r) =>
+      `<tr><td>${esc(r.industry)}</td><td>${(r.allocation * 100).toFixed(2)}%</td><td>${(r.selection * 100).toFixed(2)}%</td><td>${(r.interaction * 100).toFixed(2)}%</td><td>${(r.total * 100).toFixed(2)}%</td></tr>`).join("") : "";
+    const tradeRows = (res.trades || []).flatMap((t) => t.items.map((i) =>
+      `<tr><td>${esc(t.date)}</td><td>${esc(i.side)}</td><td>${esc(i.name)} ${esc(i.code)}</td><td>${(i.change * 100).toFixed(2)}%</td></tr>`)).slice(0, 60).join("");
     const html = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
 <title>回测报告 · ${esc(cfg.name)}</title>
 <style>
@@ -1623,6 +1644,9 @@ th,td{border-bottom:1px solid #e8eef6;padding:6px 8px;text-align:left}th{color:#
 <h2>策略净值</h2>${eqImg ? `<img src="${eqImg}" alt="equity">` : ""}
 <h2>回撤曲线</h2>${ddImg ? `<img src="${ddImg}" alt="drawdown">` : ""}
 <h2>月度收益</h2><table><thead><tr><th>月份</th><th>收益</th></tr></thead><tbody>${monthlyRows}</tbody></table>
+${annualRows ? `<h2>年度收益</h2><table><thead><tr><th>年度</th><th>收益</th></tr></thead><tbody>${annualRows}</tbody></table>` : ""}
+${brinsonRows ? `<h2>Brinson 归因</h2><table><thead><tr><th>行业</th><th>配置</th><th>选股</th><th>交互</th><th>合计</th></tr></thead><tbody>${brinsonRows}</tbody></table>` : ""}
+${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向</th><th>股票</th><th>权重变化</th></tr></thead><tbody>${tradeRows}</tbody></table>` : ""}
 <h2>调仓持仓</h2><table><thead><tr><th>日期</th><th>持仓</th></tr></thead><tbody>${holdingsRows}</tbody></table>
 <div class="foot">AlphaLab 自动生成 · 因子：${esc(factorText)} · 结果仅供研究，不构成投资建议。</div>
 </div></body></html>`;
