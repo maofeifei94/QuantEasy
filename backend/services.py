@@ -335,7 +335,7 @@ def factor_preview(payload: dict) -> dict:
     horizon = int(payload.get("horizon") or 5)
     result = analysis.analyze(
         score, data["close"], valid, data["dates"], data["codes"],
-        data["names"], horizon=horizon,
+        data["names"], horizon=horizon, industries=data["industries"],
     )
     return {
         "factor": {
@@ -551,6 +551,142 @@ def _segment_metrics(net: np.ndarray, nav: np.ndarray) -> dict:
     }
 
 
+def _brinson(weights: np.ndarray, close: np.ndarray, valid: np.ndarray,
+             codes: list[str], industries: dict[str, str]) -> dict | None:
+    """Brinson-Fachler 归因：超额收益拆分为行业配置、选股与交互效应。"""
+    T, N = weights.shape
+    if T < 2:
+        return None
+    groups: dict[str, list[int]] = {}
+    for j, code in enumerate(codes):
+        groups.setdefault(industries.get(code, "未分类"), []).append(j)
+    if len(groups) < 2:
+        return None
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rets = close[1:] / close[:-1] - 1.0
+    rets = np.nan_to_num(rets, nan=0.0, posinf=0.0, neginf=0.0)
+    acc = {k: {"allocation": 0.0, "selection": 0.0, "interaction": 0.0} for k in groups}
+    for t in range(T - 1):
+        v = valid[t]
+        total = float(v.sum())
+        if total <= 0:
+            continue
+        r = rets[t]
+        for ind, members in groups.items():
+            idx = np.asarray(members)
+            mv = v[idx]
+            cnt = float(mv.sum())
+            if cnt <= 0:
+                continue
+            wb = cnt / total
+            rb = float(r[idx][mv].mean())
+            wj = weights[t, idx]
+            wp = float(np.nansum(wj))
+            rp = float(np.nansum(wj * r[idx]) / wp) if abs(wp) > 1e-9 else 0.0
+            acc[ind]["allocation"] += (wp - wb) * rb
+            acc[ind]["selection"] += wb * (rp - rb)
+            acc[ind]["interaction"] += (wp - wb) * (rp - rb)
+    rows = []
+    for ind, a in acc.items():
+        total_eff = a["allocation"] + a["selection"] + a["interaction"]
+        rows.append({
+            "industry": ind,
+            "allocation": round(a["allocation"], 4),
+            "selection": round(a["selection"], 4),
+            "interaction": round(a["interaction"], 4),
+            "total": round(total_eff, 4),
+        })
+    rows.sort(key=lambda x: -abs(x["total"]))
+    totals = {k: round(sum(r[k] for r in rows), 4)
+              for k in ("allocation", "selection", "interaction", "total")}
+    return {"industries": rows, "totals": totals}
+
+
+def _bootstrap(net: np.ndarray, samples: int = 400) -> dict | None:
+    """日收益 Bootstrap 重采样，给出年化收益与夏普的 95% 置信区间。"""
+    net = np.asarray(net, dtype=np.float64)
+    n = len(net)
+    if n < 60:
+        return None
+    rng = np.random.default_rng(42)
+    pick = rng.integers(0, n, size=(samples, n))
+    sim = net[pick]
+    nav = np.prod(1.0 + sim, axis=1)
+    ann = nav ** (252.0 / n) - 1.0
+    std = sim.std(axis=1, ddof=1)
+    sharpe = np.where(std > 1e-12, sim.mean(axis=1) / std * np.sqrt(252), 0.0)
+
+    def ci(arr):
+        return {
+            "low": round(float(np.percentile(arr, 2.5)), 4),
+            "mid": round(float(np.median(arr)), 4),
+            "high": round(float(np.percentile(arr, 97.5)), 4),
+        }
+    return {"samples": samples, "annual_return": ci(ann), "sharpe": ci(sharpe)}
+
+
+def combine_portfolios(payload: dict) -> dict:
+    """多策略组合：按权重合成已保存回测的收益曲线。"""
+    items = payload.get("items") or []
+    if not (2 <= len(items) <= 6):
+        raise ValueError("请选择 2~6 个回测进行组合")
+    records, weights = [], []
+    for item in items:
+        bt = database.get_backtest(int(item.get("id")))
+        if bt is None:
+            raise ValueError(f"回测不存在: {item.get('id')}")
+        w = float(item.get("weight", 1) or 0)
+        if w <= 0:
+            continue
+        records.append(bt)
+        weights.append(w)
+    if len(records) < 2:
+        raise ValueError("至少需要两个有效权重的回测")
+    total_w = sum(weights)
+    weights = [w / total_w for w in weights]
+
+    date_sets = [set(r["result"]["dates"]) for r in records]
+    common = sorted(set.intersection(*date_sets))
+    if len(common) < 30:
+        raise ValueError("所选回测的日期区间重叠不足")
+    ret_maps = []
+    for r in records:
+        res = r["result"]
+        ret_maps.append({
+            d: (res["daily_returns"][i - 1] if i > 0 else 0.0)
+            for i, d in enumerate(res["dates"])
+        })
+    matrix = np.array([
+        [ret_maps[k].get(d, 0.0) or 0.0 for d in common]
+        for k in range(len(records))
+    ])
+    combined = np.average(matrix, axis=0, weights=weights)
+    nav = np.concatenate([[1.0], np.cumprod(1.0 + combined)])
+    metrics = _segment_metrics(combined, nav)
+    metrics.update({
+        "total_return": round(float(nav[-1] - 1), 4),
+        "annual_volatility": round(float(np.std(combined) * np.sqrt(252)), 4),
+    })
+    corr = np.corrcoef(matrix)
+    return {
+        "dates": common,
+        "nav": [round(float(v), 4) for v in nav],
+        "metrics": metrics,
+        "items": [
+            {
+                "id": r["id"], "name": r["name"], "weight": round(float(w), 4),
+                "annual_return": r["metrics"].get("annual_return"),
+                "sharpe": r["metrics"].get("sharpe"),
+            }
+            for r, w in zip(records, weights)
+        ],
+        "correlation": {
+            "labels": [r["name"] for r in records],
+            "matrix": [[round(float(v), 3) for v in row] for row in corr],
+        },
+    }
+
+
 def _index_benchmark(dates: list[str], code: str) -> np.ndarray:
     """从 index_bars 构建基准净值，缺失日按前值填充。"""
     rows = database.get_index_bars(code, dates[0], dates[-1])
@@ -761,9 +897,12 @@ def run_backtest(payload: dict) -> dict:
         }
 
     attribution = _attribution(w, close, codes, data["names"], data["industries"])
+    brinson = _brinson(w, close, valid, codes, data["industries"])
+    bootstrap = _bootstrap(np.asarray(sim["returns"]))
 
     analysis_res = analysis.analyze(
         score, close, valid, dates, codes, data["names"], horizon=5,
+        industries=data["industries"],
     )
 
     def r(arr, nd=5):
@@ -783,6 +922,8 @@ def run_backtest(payload: dict) -> dict:
         "holdings": _holdings(dates, w, rebalance, data["names"], codes),
         "industry_exposure": _industry_exposure(w, rebalance, codes, data["industries"]),
         "attribution": attribution,
+        "brinson": brinson,
+        "bootstrap": bootstrap,
         "trades": _trades(w, rebalance, dates, codes, data["names"]),
         "oos": oos,
         "factor": {
@@ -794,6 +935,7 @@ def run_backtest(payload: dict) -> dict:
             "ic": analysis_res["ic"],
             "ic_by_year": analysis_res["ic_by_year"],
             "ic_decay": analysis_res["ic_decay"],
+            "industry_ic": analysis_res["industry_ic"],
             "quantile_returns": analysis_res["quantile_returns"],
         },
         "universe": {

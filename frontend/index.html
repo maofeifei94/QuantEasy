@@ -432,7 +432,10 @@
           <div class="panel-title">历史回测</div>
           <div class="panel-sub">所有回测结果均持久化在 SQLite（backtests 表）中</div>
         </div>
-        <button class="btn sm" id="refreshHistory">刷新</button>
+        <div class="form-row" style="gap:6px">
+          <button class="btn sm" id="strategyCombineBtn">策略组合</button>
+          <button class="btn sm" id="refreshHistory">刷新</button>
+        </div>
       </div>
       <div id="historyCompareBar" class="compare-bar" style="display:none">
         <span id="compareHint">已选择 0 个回测</span>

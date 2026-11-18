@@ -527,6 +527,7 @@
       </div>` : ""}
       <div id="icBlock"></div>
       <div id="icMonthBlock"></div>
+      <div id="industryIcBlock"></div>
       <div class="grid-2" style="margin-top:0">
         <div id="decayBlock"></div>
         <div id="quantileBlock"></div>
@@ -552,6 +553,17 @@
       </div>`;
       box.querySelector("#icMonthBlock").appendChild(monthBlock);
       renderICMonthHeat(monthBlock.querySelector("#icMonthHeat"), res.ic_monthly);
+    }
+
+    if ((res.industry_ic || []).length) {
+      const indBlock = document.createElement("div");
+      indBlock.innerHTML = chartBlock("分行业 IC", `行业内部 Rank IC · 预测窗口 ${res.horizon} 日`);
+      box.querySelector("#industryIcBlock").appendChild(indBlock);
+      Charts.bar(indBlock.querySelector("canvas"), {
+        labels: res.industry_ic.map((d) => d.industry),
+        values: res.industry_ic.map((d) => d.ic),
+        height: 210, colorsByValue: true, yFmt: (v) => v.toFixed(2), includeZero: true,
+      });
     }
 
     const decayBlock = document.createElement("div");
@@ -1307,6 +1319,22 @@
         </div>
       </div>` : ""}
 
+      ${res.bootstrap ? `<div class="panel">
+        <div class="chart-title-row"><div><div class="panel-title" style="font-size:13px">稳健性检验（Bootstrap）</div><div class="panel-sub">日收益重采样 ${res.bootstrap.samples} 次 · 95% 置信区间</div></div></div>
+        <div class="grid-2">
+          <div class="perf">
+            <div class="k">年化收益 95% CI</div>
+            <div class="v">${fmtPct(res.bootstrap.annual_return.low)} ~ ${fmtPct(res.bootstrap.annual_return.high)}</div>
+            <div class="panel-sub" style="margin-top:3px">中位数 ${fmtPct(res.bootstrap.annual_return.mid)}</div>
+          </div>
+          <div class="perf">
+            <div class="k">夏普比率 95% CI</div>
+            <div class="v">${fmtNum(res.bootstrap.sharpe.low)} ~ ${fmtNum(res.bootstrap.sharpe.high)}</div>
+            <div class="panel-sub" style="margin-top:3px">中位数 ${fmtNum(res.bootstrap.sharpe.mid)}</div>
+          </div>
+        </div>
+      </div>` : ""}
+
       <div class="panel" id="industryPanel">
         <div class="chart-title-row"><div><div class="panel-title" style="font-size:13px">行业暴露</div><div class="panel-sub">最近一次调仓的行业净权重</div></div></div>
         <div class="chart-wrap"><canvas id="industryChart"></canvas></div>
@@ -1322,6 +1350,27 @@
           </div>
         </div>
       </div>
+
+      ${res.brinson ? `<div class="panel" id="brinsonPanel">
+        <div class="chart-title-row"><div><div class="panel-title" style="font-size:13px">Brinson 归因</div><div class="panel-sub">超额收益分解为行业配置、选股与交互效应</div></div></div>
+        <div class="table-wrap" style="max-height:300px">
+          <table>
+            <thead><tr><th>行业</th><th style="text-align:right">配置效应</th><th style="text-align:right">选股效应</th><th style="text-align:right">交互效应</th><th style="text-align:right">合计</th></tr></thead>
+            <tbody>
+              ${res.brinson.industries.map((r) => `<tr style="cursor:default"><td>${esc(r.industry)}</td>
+                <td style="text-align:right" class="num-mono ${r.allocation >= 0 ? "up" : "down"}">${fmtPct(r.allocation)}</td>
+                <td style="text-align:right" class="num-mono ${r.selection >= 0 ? "up" : "down"}">${fmtPct(r.selection)}</td>
+                <td style="text-align:right" class="num-mono ${r.interaction >= 0 ? "up" : "down"}">${fmtPct(r.interaction)}</td>
+                <td style="text-align:right" class="num-mono ${r.total >= 0 ? "up" : "down"}">${fmtPct(r.total)}</td></tr>`).join("")}
+              <tr style="cursor:default"><td style="font-weight:600">合计</td>
+                <td style="text-align:right" class="num-mono">${fmtPct(res.brinson.totals.allocation)}</td>
+                <td style="text-align:right" class="num-mono">${fmtPct(res.brinson.totals.selection)}</td>
+                <td style="text-align:right" class="num-mono">${fmtPct(res.brinson.totals.interaction)}</td>
+                <td style="text-align:right" class="num-mono" style="font-weight:600">${fmtPct(res.brinson.totals.total)}</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>` : ""}
 
       <div class="panel">
         <div class="chart-title-row"><div><div class="panel-title" style="font-size:13px">调仓持仓</div><div class="panel-sub">最近 ${res.holdings.length} 次调仓的持仓明细（权重）</div></div></div>
@@ -1793,6 +1842,79 @@ th,td{border-bottom:1px solid #e8eef6;padding:6px 8px;text-align:left}th{color:#
     }
   }
 
+  async function openStrategyCombine() {
+    try {
+      const data = await api("/api/backtests?limit=40");
+      const items = data.items || [];
+      if (items.length < 2) { toast("至少需要两条回测记录", true); return; }
+      openModal(`
+        <div class="modal-head">
+          <div><h3>多策略组合</h3><div class="panel-sub" style="margin-top:3px">按权重合成已保存回测的收益曲线（日频再平衡）</div></div>
+          <button class="icon-btn" data-close>✕</button>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:5px;max-height:320px;overflow-y:auto">
+          ${items.map((it, i) => `<label style="display:grid;grid-template-columns:auto 1fr 72px;gap:10px;align-items:center;border:1px solid var(--border-soft);background:#0a121c;border-radius:8px;padding:7px 10px">
+            <input type="checkbox" data-id="${it.id}" ${i < 2 ? "checked" : ""} style="accent-color:var(--green)">
+            <span style="font-size:12.5px">${esc(it.name)} <span class="cd">#${it.id}</span></span>
+            <input type="number" class="combine-weight" data-wid="${it.id}" value="1" step="0.5" min="0" style="padding:3px 6px;font-size:11px;text-align:center">
+          </label>`).join("")}
+        </div>
+        <div class="modal-foot">
+          <button class="btn ghost" data-close>取消</button>
+          <button class="btn primary" id="combineRun">计算组合</button>
+        </div>
+        <div id="combineResult"></div>`, true);
+
+      $("#combineRun").addEventListener("click", async () => {
+        const picked = $$("#modalBox input[type=checkbox]:checked");
+        if (picked.length < 2) { toast("请至少选择两个回测", true); return; }
+        if (picked.length > 6) { toast("最多组合 6 个策略", true); return; }
+        const payload = {
+          items: picked.map((cb) => {
+            const wid = cb.dataset.id;
+            const inp = $(`#modalBox .combine-weight[data-wid="${wid}"]`);
+            return { id: Number(wid), weight: Number(inp && inp.value) || 1 };
+          }),
+        };
+        const btn = $("#combineRun");
+        btn.disabled = true;
+        btn.innerHTML = `<span class="spinner"></span> 计算中`;
+        try {
+          const res = await api("/api/portfolio/combine", { method: "POST", body: payload });
+          renderCombineResult(res);
+          toast("策略组合计算完成");
+        } catch (e) {
+          toast(e.message, true);
+        } finally {
+          btn.disabled = false;
+          btn.textContent = "计算组合";
+        }
+      });
+    } catch (e) { toast(e.message, true); }
+  }
+
+  function renderCombineResult(res) {
+    const m = res.metrics;
+    const box = $("#combineResult");
+    box.innerHTML = `
+      <div class="divider"></div>
+      <div class="panel-sub" style="margin:14px 0 8px">组合权重：${res.items.map((i) => `${esc(i.name)} ${(i.weight * 100).toFixed(0)}%`).join(" · ")}</div>
+      <div class="grid-3">
+        ${[["年化收益", fmtPct(m.annual_return)], ["累计收益", fmtPct(m.total_return)], ["夏普", fmtNum(m.sharpe)], ["最大回撤", fmtPct(m.max_drawdown)]].map(([k, v]) => `<div class="perf"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("")}
+      </div>
+      <div class="chart-wrap" style="margin-top:12px"><canvas id="combineChart"></canvas></div>
+      <div class="panel-sub" style="margin-top:10px">策略相关性</div>
+      <div class="table-wrap" style="max-height:170px">
+        <table><thead><tr><th></th>${res.correlation.labels.map((l) => `<th>${esc(l)}</th>`).join("")}</tr></thead>
+          <tbody>${res.correlation.matrix.map((row, i) => `<tr style="cursor:default"><td>${esc(res.correlation.labels[i])}</td>${row.map((v) => `<td class="num-mono">${fmtNum(v, 2)}</td>`).join("")}</tr>`).join("")}</tbody></table>
+      </div>`;
+    const nav = res.nav.map((v) => (v - 1) * 100);
+    Charts.line($("#combineChart"), {
+      labels: res.dates, series: [{ name: "组合净值", data: nav, color: "#3ddc97", fill: true }],
+      height: 240, yFmt: (v) => v.toFixed(0) + "%", xFmt: shortDate,
+    });
+  }
+
   async function openHistoryDetail(id) {
     try {
       const detail = await api(`/api/backtests/${id}`);
@@ -1839,6 +1961,7 @@ th,td{border-bottom:1px solid #e8eef6;padding:6px 8px;text-align:left}th{color:#
     $("#runBacktestBtn").addEventListener("click", runBacktest);
     $("#optimizeBtn").addEventListener("click", runParamScan);
     $("#refreshHistory").addEventListener("click", loadHistory);
+    $("#strategyCombineBtn").addEventListener("click", openStrategyCombine);
     $("#compareBtn").addEventListener("click", openCompare);
     $("#clearCompare").addEventListener("click", () => {
       state.compare.clear();

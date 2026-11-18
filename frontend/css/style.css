@@ -455,6 +455,7 @@ td .cd { font-family: var(--mono); font-size: 11px; color: var(--faint); }
 .bt-form .field + .field, .bt-form .form-row + .field { margin-top: 12px; }
 .bt-form .form-grid { margin-top: 12px; }
 .form-divider { border-top: 1px dashed var(--border); margin: 16px 0 14px; }
+.divider { border-top: 1px dashed var(--border); margin: 8px 0 0; }
 
 /* 策略模板 */
 .tpl-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 14px; }

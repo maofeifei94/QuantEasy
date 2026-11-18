@@ -195,6 +195,14 @@ def latest_signal(payload: dict = Body(...)) -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/api/portfolio/combine")
+def combine_portfolios(payload: dict = Body(...)) -> dict:
+    try:
+        return services.combine_portfolios(payload)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/api/backtest/optimize")
 def optimize_backtest(payload: dict = Body(...)) -> dict:
     try:

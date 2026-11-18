@@ -49,7 +49,7 @@ def daily_ic(score: np.ndarray, fwd: np.ndarray, min_stocks: int = 8):
 
 def analyze(score: np.ndarray, close: np.ndarray, valid: np.ndarray,
             dates: list[str], codes: list[str], names: dict[str, str],
-            horizon: int = 5) -> dict:
+            horizon: int = 5, industries: dict[str, str] | None = None) -> dict:
     fwd = _forward_returns(close, valid, horizon)
     ic_series = daily_ic(score, fwd)
     finite_ic = ic_series[np.isfinite(ic_series)]
@@ -140,6 +140,28 @@ def analyze(score: np.ndarray, close: np.ndarray, valid: np.ndarray,
         for k, v in sorted(month_values.items())
     ]
 
+    industry_ic: list[dict] = []
+    if industries:
+        groups: dict[str, list[int]] = {}
+        for j, code in enumerate(codes):
+            groups.setdefault(industries.get(code, "未分类"), []).append(j)
+        for ind, members in groups.items():
+            if len(members) < 5:
+                continue
+            idx = np.asarray(members)
+            series = daily_ic(
+                score[:, idx], fwd[:, idx],
+                min_stocks=max(5, min(10, len(members))),
+            )
+            vals = series[np.isfinite(series)]
+            if vals.size:
+                industry_ic.append({
+                    "industry": ind,
+                    "ic": round(float(vals.mean()), 4),
+                    "days": int(vals.size),
+                })
+        industry_ic.sort(key=lambda x: -abs(x["ic"]))
+
     return {
         "horizon": horizon,
         "ic": {
@@ -151,6 +173,7 @@ def analyze(score: np.ndarray, close: np.ndarray, valid: np.ndarray,
         },
         "ic_by_year": ic_by_year,
         "ic_monthly": ic_monthly,
+        "industry_ic": industry_ic,
         "ic_decay": ic_decay,
         "quantile_returns": quantile_returns,
         "quantile_nav": quantile_nav(score, close, valid, dates),
