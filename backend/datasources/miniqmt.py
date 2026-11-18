@@ -154,6 +154,32 @@ def sync(
                 except (TypeError, ValueError):
                     continue
 
+    indices: list[dict] = []
+    if progress:
+        progress(0.96, "读取指数基准")
+    for index_code, index_name in (("000300.SH", "沪深300"), ("000905.SH", "中证500")):
+        try:
+            xtdata.download_history_data(index_code, "1d", start_compact, end_compact)
+            idx_data = xtdata.get_market_data_ex(
+                field_list=[], stock_list=[index_code], period="1d",
+                start_time=start_compact, end_time=end_compact,
+                dividend_type="none", fill_data=True,
+            )
+            df = idx_data.get(index_code)
+            if df is None or len(df) == 0:
+                continue
+            rows = []
+            for ts, row in df.iterrows():
+                date = _norm_date(ts)
+                close = row.get("close")
+                if date is None or close is None or close != close:
+                    continue
+                rows.append((index_code, date, round(float(close), 2)))
+            if rows:
+                indices.append({"code": index_code, "name": index_name, "rows": rows})
+        except Exception:
+            continue
+
     if progress:
         progress(1.0, f"完成，共 {len(stocks)} 只股票 / {len(bars)} 条日线")
     if not bars:
@@ -161,6 +187,7 @@ def sync(
     return {
         "stocks": stocks,
         "bars": bars,
+        "indices": indices,
         "source": "miniqmt",
         "start": start,
         "end": end,

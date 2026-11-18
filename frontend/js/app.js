@@ -13,6 +13,7 @@
     universe: new Set(),
     btFactors: [],
     compare: new Set(),
+    indices: [],
     btResult: null,
     syncTimer: null,
     stockFilter: "",
@@ -200,6 +201,23 @@
     renderMarket();
   }
 
+  async function loadIndices() {
+    try {
+      const data = await api("/api/indices");
+      state.indices = data.items || [];
+    } catch (e) {
+      state.indices = [];
+    }
+    const sel = $("#btBenchmark");
+    if (!sel) return;
+    const current = sel.value;
+    sel.innerHTML = `<option value="universe">股票池等权</option><option value="market">全市场等权</option>` +
+      state.indices.filter((i) => i.count > 30).map((i) =>
+        `<option value="index:${esc(i.code)}">${esc(i.name)}</option>`
+      ).join("");
+    if (current && Array.from(sel.options).some((o) => o.value === current)) sel.value = current;
+  }
+
   function renderStocks() {
     const q = state.stockFilter.trim().toLowerCase();
     const rows = state.stocks.filter((s) =>
@@ -328,7 +346,7 @@
           appendLog(`完成 · 数据源 ${job.result.source === "miniqmt" ? "miniQMT" : "合成演示"}`);
           finishSync(true);
           await loadStatus();
-          await Promise.all([loadStocks(), loadFactors()]);
+          await Promise.all([loadStocks(), loadFactors(), loadIndices()]);
           renderUniverse();
           toast("行情同步完成");
           return;
@@ -800,6 +818,66 @@
     el.textContent = n ? `已选 ${n} 只` : "全部股票（不限制）";
   }
 
+  function saveUniverse() {
+    if (!state.universe.size) { toast("请先勾选要保存的股票", true); return; }
+    openModal(`
+      <div class="modal-head"><div><h3>保存自选股票池</h3><div class="panel-sub" style="margin-top:3px">共 ${state.universe.size} 只股票，保存在 SQLite</div></div>
+        <button class="icon-btn" data-close>✕</button></div>
+      <div class="field"><label>股票池名称</label><input type="text" id="uvName" placeholder="如：核心持仓 20"></div>
+      <div class="modal-foot">
+        <button class="btn ghost" data-close>取消</button>
+        <button class="btn primary" id="uvSave">保存</button>
+      </div>`);
+    $("#uvName").focus();
+    $("#uvSave").addEventListener("click", async () => {
+      const name = $("#uvName").value.trim();
+      if (!name) { toast("请输入股票池名称", true); return; }
+      try {
+        await api("/api/universes", {
+          method: "POST",
+          body: { name, codes: Array.from(state.universe) },
+        });
+        closeModal();
+        toast(`股票池「${name}」已保存`);
+      } catch (e) { toast(e.message, true); }
+    });
+  }
+
+  async function openLoadUniverse() {
+    try {
+      const data = await api("/api/universes");
+      const items = data.items || [];
+      if (!items.length) { toast("还没有保存的股票池", true); return; }
+      openModal(`
+        <div class="modal-head"><div><h3>载入自选股票池</h3><div class="panel-sub" style="margin-top:3px">选择后覆盖当前勾选</div></div>
+          <button class="icon-btn" data-close>✕</button></div>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          ${items.map((it, i) => `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;border:1px solid var(--border-soft);background:#0a121c;border-radius:8px;padding:9px 12px">
+            <div><div style="font-size:13px">${esc(it.name)}</div><div class="panel-sub" style="margin-top:1px">${it.count} 只 · ${esc(it.created_at)}</div></div>
+            <div class="form-row">
+              <button class="btn sm" data-uv-apply="${i}">载入</button>
+              <button class="btn sm danger" data-uv-del="${i}">删除</button>
+            </div>
+          </div>`).join("")}
+        </div>`, true);
+      $$("#modalBox [data-uv-apply]").forEach((btn) => btn.addEventListener("click", () => {
+        const item = items[Number(btn.dataset.uvApply)];
+        const valid = new Set(state.stocks.map((s) => s.code));
+        state.universe = new Set((item.codes || []).filter((c) => valid.has(c)));
+        renderUniverse();
+        closeModal();
+        toast(`已载入股票池「${item.name}」`);
+      }));
+      $$("#modalBox [data-uv-del]").forEach((btn) => btn.addEventListener("click", async () => {
+        const item = items[Number(btn.dataset.uvDel)];
+        try {
+          await api(`/api/universes/${item.id}`, { method: "DELETE" });
+          openLoadUniverse();
+        } catch (e) { toast(e.message, true); }
+      }));
+    } catch (e) { toast(e.message, true); }
+  }
+
   function buildCommonConfig() {
     return {
       codes: state.universe.size ? Array.from(state.universe) : null,
@@ -1139,7 +1217,11 @@
       pre.neutralize ? "行业中性" : "",
       pre.standardize ? "标准化" : "",
     ].filter(Boolean).map((p) => `<span class="chip green">${p}</span>`).join("");
-    const benchName = cfg.benchmark === "market" ? "全市场等权" : "股票池等权";
+    const benchName = cfg.benchmark_name || (cfg.benchmark === "market"
+      ? "全市场等权"
+      : (cfg.benchmark || "").startsWith("index:")
+        ? ((state.indices.find((i) => "index:" + i.code === cfg.benchmark) || {}).name || "指数基准")
+        : "股票池等权");
     const weightLabel = { equal: "等权", score: "得分加权", inverse_vol: "波动率倒数" }[cfg.weighting] || "等权";
 
     $("#btResults").innerHTML = `
@@ -1199,6 +1281,13 @@
         <div class="chart-title-row"><div><div class="panel-title" style="font-size:13px">月度收益热力图</div><div class="panel-sub">红色为正收益，绿色为负收益</div></div></div>
         <div id="heatmap" class="heatmap"></div>
       </div>
+
+      ${(res.annual_returns || []).length ? `<div class="panel">
+        <div class="chart-title-row"><div><div class="panel-title" style="font-size:13px">年度收益</div><div class="panel-sub">按自然年统计</div></div></div>
+        <div class="grid-3" style="grid-template-columns:repeat(auto-fit, minmax(120px, 1fr))">
+          ${res.annual_returns.map((a) => `<div class="perf"><div class="k">${a.year} 年</div><div class="v ${colorClass(a.return)}">${fmtPct(a.return)}</div></div>`).join("")}
+        </div>
+      </div>` : ""}
 
       ${res.oos ? `<div class="panel">
         <div class="chart-title-row"><div><div class="panel-title" style="font-size:13px">样本内 / 样本外检验</div><div class="panel-sub">分界日 ${esc(res.oos.split_date)}</div></div></div>
@@ -1340,7 +1429,7 @@ th,td{border-bottom:1px solid #e8eef6;padding:6px 8px;text-align:left}th{color:#
 .foot{margin-top:26px;color:#93a1b3;font-size:11px}
 </style></head><body><div class="wrap">
 <h1>${esc(cfg.name)}</h1>
-<div class="sub">${esc(res.universe.start)} → ${esc(res.universe.end)} · ${res.universe.stocks} 只股票 · 基准 ${cfg.benchmark === "market" ? "全市场等权" : "股票池等权"} · 生成于 ${new Date().toLocaleString("zh-CN", { hour12: false })}</div>
+<div class="sub">${esc(res.universe.start)} → ${esc(res.universe.end)} · ${res.universe.stocks} 只股票 · 基准 ${esc(cfg.benchmark_name || (cfg.benchmark === "market" ? "全市场等权" : cfg.benchmark === "universe" ? "股票池等权" : (cfg.benchmark || "股票池等权")))} · 生成于 ${new Date().toLocaleString("zh-CN", { hour12: false })}</div>
 <div class="chips">${(res.factor.factors || []).map((f) => `<span>${esc(f.label)} ${(f.weight * 100).toFixed(0)}%</span>`).join("")}
 <span>${cfg.rebalance_days} 日调仓</span><span>持仓 ${cfg.top_n > 0 ? cfg.top_n : (cfg.top_pct * 100).toFixed(0) + "%"}</span>
 <span>成本 买 ${cfg.buy_cost_bps || "—"} / 卖 ${cfg.sell_cost_bps || "—"} bps</span></div>
@@ -1765,6 +1854,14 @@ th,td{border-bottom:1px solid #e8eef6;padding:6px 8px;text-align:left}th{color:#
       state.universe.clear();
       renderUniverse();
     });
+    $("#saveUniverseBtn").addEventListener("click", (e) => {
+      e.preventDefault();
+      saveUniverse();
+    });
+    $("#loadUniverseBtn").addEventListener("click", (e) => {
+      e.preventDefault();
+      openLoadUniverse();
+    });
 
     $("#modalRoot").addEventListener("click", (e) => {
       if (e.target === $("#modalRoot")) closeModal();
@@ -1783,7 +1880,7 @@ th,td{border-bottom:1px solid #e8eef6;padding:6px 8px;text-align:left}th{color:#
     bindEvents();
     try {
       const s = await loadStatus(true);
-      await Promise.all([loadStocks(), loadFactors()]);
+      await Promise.all([loadStocks(), loadFactors(), loadIndices()]);
       renderUniverse();
       if (s.stock_count === 0) waitForData();
       const first = state.factors.find((f) => !f.is_custom) || state.factors[0];

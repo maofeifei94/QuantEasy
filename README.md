@@ -25,9 +25,11 @@ SQLite，因子计算与回测由 **JAX** 向量化执行，前端为无构建�
 - **组合构建**：等权 / 因子得分加权 / 波动率倒数加权，支持单票权重上限。
 - **交易成本**：佣金（双边）、印花税（卖出）、滑点分项建模，贴近 A 股实际交易成本。
 - **回测**：自选股票池、调仓周期、持仓数量/比例、多空组合、MA20/MA60 大盘择时；
-  可选股票池等权或全市场等权基准；输出净值曲线、回撤、Alpha/Beta、信息比率、
-  索提诺、VaR/CVaR、上下行捕获、行业暴露、收益归因、交易明细、月度热力图与调仓持仓，
-  并支持样本内/样本外拆分检验，结果持久化到 SQLite，支持净值 CSV 与 HTML 研究报告导出。
+  基准可选股票池等权、全市场等权或沪深300/中证500 指数；输出净值曲线、回撤、
+  Alpha/Beta、信息比率、索提诺、VaR/CVaR、上下行捕获、行业暴露、收益归因、交易明细、
+  年度/月度收益与调仓持仓，并支持样本内/样本外拆分检验，结果持久化到 SQLite，
+  支持净值 CSV 与 HTML 研究报告导出。
+- **自选股票池**：勾选股票后可命名保存到 SQLite，随时载入复用。
 - **最新信号**：按当前因子、过滤与权重配置生成最新交易日的目标持仓，可导出 CSV。
 - **策略模板**：动量趋势、低波防御、短期反转、多因子均衡，一键套用配置。
 - **研究效率**：多因子 ICIR 自动加权、因子月度 IC 热力图、因子稳定性（排名自相关）、
@@ -92,6 +94,9 @@ rank(ts_mean(volume, 5) / ts_mean(volume, 60))               # 量能放大
 | POST | `/api/data/sync` | 创建同步任务（`source`: auto/miniqmt/synthetic） |
 | GET | `/api/data/jobs/{id}` | 同步任务进度 |
 | GET | `/api/stocks` | 股票列表与最新行情 |
+| GET | `/api/indices` | 可用指数基准（沪深300/中证500） |
+| GET | `/api/universes` | 自选股票池列表 |
+| POST | `/api/universes` | 保存自选股票池 |
 | GET | `/api/factors` | 内置 + 自定义因子 |
 | POST | `/api/factors` | 新建自定义因子 |
 | POST | `/api/factors/preview` | IC / 分位收益分析 |
@@ -112,6 +117,7 @@ backend/
   datasources/
     miniqmt.py         xtquant 数据适配器
     synthetic.py       合成行情生成器
+  indices.py           宽基指数代理构建
   factors/
     ops.py             JAX 时序/截面算子
     engine.py          因子表达式校验与求值

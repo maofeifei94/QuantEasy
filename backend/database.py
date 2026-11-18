@@ -58,6 +58,26 @@ CREATE TABLE IF NOT EXISTS meta (
     key    TEXT PRIMARY KEY,
     value  TEXT
 );
+
+CREATE TABLE IF NOT EXISTS indices (
+    code       TEXT PRIMARY KEY,
+    name       TEXT,
+    updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS index_bars (
+    code  TEXT NOT NULL,
+    date  TEXT NOT NULL,
+    close REAL,
+    PRIMARY KEY (code, date)
+);
+
+CREATE TABLE IF NOT EXISTS universes (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL UNIQUE,
+    codes      TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 """
 
 
@@ -110,6 +130,97 @@ def clear_market_data() -> None:
     with _write_lock, get_conn() as conn:
         conn.execute("DELETE FROM daily_bars")
         conn.execute("DELETE FROM stocks")
+        conn.execute("DELETE FROM index_bars")
+        conn.execute("DELETE FROM indices")
+
+
+def upsert_indices(rows: Iterable[dict[str, Any]]) -> None:
+    values = [(r["code"], r.get("name", r["code"]), _now()) for r in rows]
+    if not values:
+        return
+    with _write_lock, get_conn() as conn:
+        conn.executemany(
+            """INSERT INTO indices(code,name,updated_at) VALUES(?,?,?)
+               ON CONFLICT(code) DO UPDATE SET name=excluded.name,
+               updated_at=excluded.updated_at""",
+            values,
+        )
+
+
+def insert_index_bars(rows: Iterable[tuple]) -> int:
+    rows = list(rows)
+    if not rows:
+        return 0
+    with _write_lock, get_conn() as conn:
+        conn.executemany(
+            "INSERT OR REPLACE INTO index_bars(code,date,close) VALUES(?,?,?)", rows
+        )
+    return len(rows)
+
+
+def list_indices() -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT i.code, i.name, MIN(b.date) AS start, MAX(b.date) AS end,
+                      COUNT(b.date) AS count
+               FROM indices i LEFT JOIN index_bars b ON b.code = i.code
+               GROUP BY i.code, i.name ORDER BY i.code"""
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def count_index_bars() -> int:
+    with get_conn() as conn:
+        return conn.execute("SELECT COUNT(*) c FROM index_bars").fetchone()["c"]
+
+
+def get_index_bars(code: str, start: str, end: str) -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT date,close FROM index_bars WHERE code=? AND date BETWEEN ? AND ? ORDER BY date",
+            (code, start, end),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_universes() -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id,name,codes,created_at FROM universes ORDER BY id DESC"
+        ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["codes"] = json.loads(d["codes"])
+        except json.JSONDecodeError:
+            d["codes"] = []
+        d["count"] = len(d["codes"])
+        out.append(d)
+    return out
+
+
+def save_universe(name: str, codes: list[str]) -> dict:
+    payload = json.dumps(codes, ensure_ascii=False)
+    with _write_lock, get_conn() as conn:
+        conn.execute(
+            """INSERT INTO universes(name,codes,created_at) VALUES(?,?,?)
+               ON CONFLICT(name) DO UPDATE SET codes=excluded.codes,
+               created_at=excluded.created_at""",
+            (name, payload, _now()),
+        )
+        row = conn.execute(
+            "SELECT id,name,codes,created_at FROM universes WHERE name=?", (name,)
+        ).fetchone()
+    d = dict(row)
+    d["codes"] = codes
+    d["count"] = len(codes)
+    return d
+
+
+def delete_universe(universe_id: int) -> None:
+    with _write_lock, get_conn() as conn:
+        conn.execute("DELETE FROM universes WHERE id=?", (universe_id,))
 
 
 def set_meta(key: str, value: Any) -> None:

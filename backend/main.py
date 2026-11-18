@@ -32,6 +32,8 @@ def _startup() -> None:
     database.init_db()
     if database.stats()["stock_count"] == 0:
         threading.Thread(target=_seed_demo, daemon=True).start()
+    else:
+        threading.Thread(target=services.ensure_indices, daemon=True).start()
 
 
 def _seed_demo() -> None:
@@ -98,6 +100,33 @@ def stock_bars(code: str, start: str | None = None, end: str | None = None) -> d
     if not data["dates"]:
         raise HTTPException(status_code=404, detail="未找到该股票行情")
     return data
+
+
+@app.get("/api/indices")
+def indices() -> dict:
+    return {"items": database.list_indices()}
+
+
+@app.get("/api/universes")
+def universes() -> dict:
+    return {"items": database.list_universes()}
+
+
+@app.post("/api/universes")
+def save_universe(payload: dict = Body(...)) -> dict:
+    name = (payload.get("name") or "").strip()
+    codes = payload.get("codes") or []
+    if not name:
+        raise HTTPException(status_code=400, detail="股票池名称不能为空")
+    if not isinstance(codes, list) or not codes:
+        raise HTTPException(status_code=400, detail="股票池不能为空")
+    return database.save_universe(name, [str(c) for c in codes])
+
+
+@app.delete("/api/universes/{universe_id}")
+def delete_universe(universe_id: int) -> dict:
+    database.delete_universe(universe_id)
+    return {"ok": True}
 
 
 @app.get("/api/factors")

@@ -14,11 +14,32 @@ from .datasources import miniqmt, synthetic
 from .factors import analysis, builtin
 from .factors import preprocess as pre_mod
 from .factors.engine import FactorError, compute, validate
+from .indices import proxy_indices
 
 
 # --------------------------------------------------------------------------- #
 # 数据同步
 # --------------------------------------------------------------------------- #
+def _persist_indices(items: list[dict]) -> None:
+    if not items:
+        return
+    database.upsert_indices([{"code": i["code"], "name": i.get("name", i["code"])} for i in items])
+    rows = [row for item in items for row in item.get("rows", [])]
+    database.insert_index_bars(rows)
+
+
+def ensure_indices() -> None:
+    """为已有行情补齐宽基指数代理（启动或首次回测时调用）。"""
+    if database.count_index_bars() > 0:
+        return
+    stats = database.stats()
+    if not stats["stock_count"] or not stats["start_date"]:
+        return
+    data = panel.build_panel(None, stats["start_date"], stats["end_date"])
+    items = proxy_indices(data["close"], data["dates"], data["volume"])
+    _persist_indices(items)
+
+
 def start_sync(payload: dict) -> str:
     job_id = jobs.create("sync")
     thread = threading.Thread(target=_sync_worker, args=(job_id, payload), daemon=True)
@@ -66,12 +87,12 @@ def _sync_worker(job_id: str, payload: dict) -> None:
             today = dt.date.today()
             gen_start = payload.get("start") or (today - dt.timedelta(days=3 * 365)).isoformat()
             gen_end = payload.get("end") or today.isoformat()
-            stocks, bars = synthetic.generate(
+            stocks, bars, indices = synthetic.generate(
                 start=gen_start, end=gen_end,
                 n_stocks=int(payload.get("demo_stocks") or 150),
                 progress=progress,
             )
-            data = {"stocks": stocks, "bars": bars, "source": "synthetic"}
+            data = {"stocks": stocks, "bars": bars, "indices": indices, "source": "synthetic"}
 
         jobs.update(job_id, progress=0.75, message="写入 SQLite 数据库")
         if replace:
@@ -82,6 +103,7 @@ def _sync_worker(job_id: str, payload: dict) -> None:
             database.insert_bars(data["bars"][i: i + 20000])
             jobs.update(job_id, progress=0.75 + 0.2 * min(1.0, (i + 20000) / max(total, 1)),
                         message=f"写入日线 {min(i + 20000, total)}/{total}")
+        _persist_indices(data.get("indices") or [])
 
         stats = database.stats()
         database.set_meta("data_source", data["source"])
@@ -529,6 +551,48 @@ def _segment_metrics(net: np.ndarray, nav: np.ndarray) -> dict:
     }
 
 
+def _index_benchmark(dates: list[str], code: str) -> np.ndarray:
+    """从 index_bars 构建基准净值，缺失日按前值填充。"""
+    rows = database.get_index_bars(code, dates[0], dates[-1])
+    if len(rows) < 30:
+        raise ValueError("指数数据不足")
+    mapping = {r["date"]: float(r["close"]) for r in rows}
+    vals: list[float | None] = []
+    last = None
+    for d in dates:
+        if d in mapping:
+            last = mapping[d]
+        vals.append(last)
+    if vals[0] is None:
+        first = next((v for v in vals if v is not None), None)
+        if first is None:
+            raise ValueError("指数数据不足")
+        vals = [first if v is None else v for v in vals]
+    out = np.array(vals, dtype=np.float64)
+    for i in range(1, len(out)):
+        if not np.isfinite(out[i]):
+            out[i] = out[i - 1]
+    return out / out[0]
+
+
+def _annual_returns(dates: list[str], nav: np.ndarray) -> list[dict]:
+    out: list[dict] = []
+    prev_nav = 1.0
+    for i in range(1, len(dates)):
+        if dates[i][:4] != dates[i - 1][:4]:
+            out.append({
+                "year": int(dates[i - 1][:4]),
+                "return": round(float(nav[i - 1]) / prev_nav - 1, 4),
+            })
+            prev_nav = float(nav[i - 1])
+    if dates:
+        out.append({
+            "year": int(dates[-1][:4]),
+            "return": round(float(nav[-1]) / prev_nav - 1, 4),
+        })
+    return out
+
+
 def _extended_metrics(net: np.ndarray, bench_nav: np.ndarray,
                       monthly: list[dict], nav: np.ndarray | None = None) -> dict:
     out: dict[str, float] = {}
@@ -643,12 +707,24 @@ def run_backtest(payload: dict) -> dict:
         max_weight=max_weight, vol=vol, timing=timing,
     )
     bench = sim["benchmark"]
+    benchmark_name = "股票池等权"
     if benchmark_type == "market":
         try:
             bench = _market_benchmark(dates, dates[0], dates[-1])
             sim["benchmark"] = bench
+            benchmark_name = "全市场等权"
         except Exception:
             benchmark_type = "universe"
+    elif benchmark_type.startswith("index:"):
+        code = benchmark_type.split(":", 1)[1]
+        try:
+            bench = _index_benchmark(dates, code)
+            sim["benchmark"] = bench
+            matched = next((i for i in database.list_indices() if i["code"] == code), None)
+            benchmark_name = matched["name"] if matched else code
+        except Exception:
+            benchmark_type = "universe"
+            benchmark_name = "股票池等权"
 
     metrics = sim["metrics"]
     bench_total = float(bench[-1] - 1)
@@ -703,6 +779,7 @@ def run_backtest(payload: dict) -> dict:
         "turnover": r(sim["turnover"], 4),
         "metrics": metrics,
         "monthly": monthly,
+        "annual_returns": _annual_returns(dates, np.asarray(sim["nav"])),
         "holdings": _holdings(dates, w, rebalance, data["names"], codes),
         "industry_exposure": _industry_exposure(w, rebalance, codes, data["industries"]),
         "attribution": attribution,
@@ -741,6 +818,7 @@ def run_backtest(payload: dict) -> dict:
             "sell_cost_bps": round(commission_bps + stamp_duty_bps + slippage_bps, 2),
             "long_short": long_short,
             "benchmark": benchmark_type,
+            "benchmark_name": benchmark_name,
             "weighting": weighting,
             "max_weight": max_weight * 100,
             "market_timing": timing_window > 1,
