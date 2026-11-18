@@ -2,5 +2,6 @@ fastapi>=0.110
 uvicorn[standard]>=0.27
 jax>=0.4.30
 numpy>=1.26
+scipy>=1.11
 # 可选：在安装 miniQMT 客户端的 Windows 机器上安装，用于真实行情同步
 # xtquant

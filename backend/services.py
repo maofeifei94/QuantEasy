@@ -7,6 +7,7 @@ import traceback
 from typing import Any
 
 import numpy as np
+from scipy.optimize import minimize
 
 from . import database, jobs, panel
 from .backtest import engine as bt_engine
@@ -756,25 +757,63 @@ def _bootstrap(net: np.ndarray, samples: int = 400) -> dict | None:
     return {"samples": samples, "annual_return": ci(ann), "sharpe": ci(sharpe)}
 
 
+def _optimize_strategy_weights(matrix: np.ndarray, method: str) -> np.ndarray | None:
+    """策略组合权重优化：最小方差 / 最大夏普 / 风险平价 / 等权。
+
+    matrix 形状为 (策略数, 交易日数)。返回 None 表示沿用用户手填权重。
+    """
+    m = matrix.shape[0]
+    if method in ("", "manual", None):
+        return None
+    if m < 2:
+        return np.ones(m)
+    if method == "equal":
+        return np.full(m, 1.0 / m)
+    cov = np.atleast_2d(np.cov(matrix))
+    cov = 0.7 * cov + 0.3 * np.diag(np.diag(cov))
+    mu = np.mean(matrix, axis=1) * 252.0
+    x0 = np.full(m, 1.0 / m)
+    bounds = [(0.0, 1.0)] * m
+    cons = ({"type": "eq", "fun": lambda w: float(np.sum(w)) - 1.0},)
+    if method == "risk_parity":
+        return _erc_weights(cov)
+    if method == "min_var":
+        res = minimize(lambda w: float(w @ cov @ w) * 1e4, x0, bounds=bounds,
+                       constraints=cons, method="SLSQP",
+                       options={"maxiter": 500, "ftol": 1e-12})
+    elif method == "max_sharpe":
+        def neg_sharpe(w):
+            var = float(w @ cov @ w)
+            if var <= 1e-18:
+                return 1e6
+            return -float(w @ mu) / np.sqrt(var)
+
+        res = minimize(neg_sharpe, x0, bounds=bounds, constraints=cons, method="SLSQP")
+    else:
+        return None
+    if not res.success or not np.all(np.isfinite(res.x)):
+        return x0
+    return np.maximum(res.x, 0.0) / max(float(np.sum(np.maximum(res.x, 0.0))), 1e-12)
+
+
 def combine_portfolios(payload: dict) -> dict:
     """多策略组合：按权重合成已保存回测的收益曲线。"""
     items = payload.get("items") or []
     if not (2 <= len(items) <= 6):
         raise ValueError("请选择 2~6 个回测进行组合")
-    records, weights = [], []
+    records, raw_weights = [], []
+    optimizer = str(payload.get("optimizer") or "manual")
     for item in items:
         bt = database.get_backtest(int(item.get("id")))
         if bt is None:
             raise ValueError(f"回测不存在: {item.get('id')}")
         w = float(item.get("weight", 1) or 0)
-        if w <= 0:
+        if optimizer == "manual" and w <= 0:
             continue
         records.append(bt)
-        weights.append(w)
+        raw_weights.append(w if w > 0 else 1.0)
     if len(records) < 2:
         raise ValueError("至少需要两个有效权重的回测")
-    total_w = sum(weights)
-    weights = [w / total_w for w in weights]
 
     date_sets = [set(r["result"]["dates"]) for r in records]
     common = sorted(set.intersection(*date_sets))
@@ -791,6 +830,13 @@ def combine_portfolios(payload: dict) -> dict:
         [ret_maps[k].get(d, 0.0) or 0.0 for d in common]
         for k in range(len(records))
     ])
+    optimized = _optimize_strategy_weights(matrix, optimizer)
+    if optimized is not None:
+        weights = [float(x) for x in optimized]
+    else:
+        optimizer = "manual"
+        total_w = sum(raw_weights)
+        weights = [w / total_w for w in raw_weights]
     combined = np.average(matrix, axis=0, weights=weights)
     nav = np.concatenate([[1.0], np.cumprod(1.0 + combined)])
     metrics = _segment_metrics(combined, nav)
@@ -801,6 +847,7 @@ def combine_portfolios(payload: dict) -> dict:
     corr = np.corrcoef(matrix)
     return {
         "dates": common,
+        "optimizer": optimizer,
         "nav": [round(float(v), 4) for v in nav],
         "metrics": metrics,
         "items": [

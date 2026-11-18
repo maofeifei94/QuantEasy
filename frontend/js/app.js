@@ -2229,6 +2229,17 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
           <div><h3>多策略组合</h3><div class="panel-sub" style="margin-top:3px">按权重合成已保存回测的收益曲线（日频再平衡）</div></div>
           <button class="icon-btn" data-close>✕</button>
         </div>
+        <div style="display:flex;align-items:center;gap:10px;margin:4px 0 10px">
+          <label style="font-size:12px;color:var(--muted)">权重方案</label>
+          <select id="combineOptimizer" style="padding:5px 8px;font-size:12px">
+            <option value="manual">手动权重</option>
+            <option value="equal">等权</option>
+            <option value="min_var">最小方差</option>
+            <option value="max_sharpe">最大夏普</option>
+            <option value="risk_parity">风险平价</option>
+          </select>
+          <span class="panel-sub" style="margin:0">自动方案将忽略手动权重</span>
+        </div>
         <div style="display:flex;flex-direction:column;gap:5px;max-height:320px;overflow-y:auto">
           ${items.map((it, i) => `<label style="display:grid;grid-template-columns:auto 1fr 72px;gap:10px;align-items:center;border:1px solid var(--border-soft);background:#0a121c;border-radius:8px;padding:7px 10px">
             <input type="checkbox" data-id="${it.id}" ${i < 2 ? "checked" : ""} style="accent-color:var(--green)">
@@ -2252,6 +2263,7 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
             const inp = $(`#modalBox .combine-weight[data-wid="${wid}"]`);
             return { id: Number(wid), weight: Number(inp && inp.value) || 1 };
           }),
+          optimizer: $("#combineOptimizer").value,
         };
         const btn = $("#combineRun");
         btn.disabled = true;
@@ -2273,9 +2285,16 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
   function renderCombineResult(res) {
     const m = res.metrics;
     const box = $("#combineResult");
+    const OPT_LABELS = { manual: "手动权重", equal: "等权", min_var: "最小方差", max_sharpe: "最大夏普", risk_parity: "风险平价" };
+    if (res.optimizer && res.optimizer !== "manual") {
+      res.items.forEach((it) => {
+        const inp = $(`#modalBox .combine-weight[data-wid="${it.id}"]`);
+        if (inp) inp.value = (it.weight * 100).toFixed(1);
+      });
+    }
     box.innerHTML = `
       <div class="divider"></div>
-      <div class="panel-sub" style="margin:14px 0 8px">组合权重：${res.items.map((i) => `${esc(i.name)} ${(i.weight * 100).toFixed(0)}%`).join(" · ")}</div>
+      <div class="panel-sub" style="margin:14px 0 8px">权重方案：${OPT_LABELS[res.optimizer] || "手动权重"} · 组合权重：${res.items.map((i) => `${esc(i.name)} ${(i.weight * 100).toFixed(0)}%`).join(" · ")}</div>
       <div class="grid-3">
         ${[["年化收益", fmtPct(m.annual_return)], ["累计收益", fmtPct(m.total_return)], ["夏普", fmtNum(m.sharpe)], ["最大回撤", fmtPct(m.max_drawdown)]].map(([k, v]) => `<div class="perf"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("")}
       </div>
