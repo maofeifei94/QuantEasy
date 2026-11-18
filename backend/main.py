@@ -141,6 +141,19 @@ def factors() -> dict:
     return {"items": all_factors() + custom}
 
 
+@app.get("/api/factors/export")
+def export_factors() -> dict:
+    return services.export_factors()
+
+
+@app.post("/api/factors/import")
+def import_factors(payload: dict = Body(...)) -> dict:
+    try:
+        return services.import_factors(payload)
+    except (FactorError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/api/factors")
 def create_factor(payload: dict = Body(...)) -> dict:
     name = (payload.get("name") or "").strip()

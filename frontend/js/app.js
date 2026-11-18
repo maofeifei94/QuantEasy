@@ -850,6 +850,43 @@
     } catch (e) { toast(e.message, true); }
   }
 
+  function exportFactors() {
+    api("/api/factors/export").then((res) => {
+      const blob = new Blob([JSON.stringify(res, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `alphalab_factors_${(res.exported_at || "").slice(0, 10) || "export"}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast(`已导出 ${res.count} 个自定义因子`);
+    }).catch((e) => toast(e.message, true));
+  }
+
+  function importFactors() {
+    $("#importFactorsFile").click();
+  }
+
+  async function handleImportFactors(ev) {
+    const file = ev.target.files && ev.target.files[0];
+    ev.target.value = "";
+    if (!file) return;
+    try {
+      const data = JSON.parse(await file.text());
+      const factors = Array.isArray(data) ? data : (data.factors || []);
+      if (!factors.length) throw new Error("文件中没有因子数据");
+      const res = await api("/api/factors/import", { method: "POST", body: { factors } });
+      await loadFactors();
+      const parts = [`导入 ${res.imported.length} 个`];
+      if (res.skipped.length) parts.push(`跳过重复 ${res.skipped.length} 个`);
+      if (res.errors.length) parts.push(`失败 ${res.errors.length} 个`);
+      toast(parts.join("，"), res.errors.length > 0);
+      if (res.errors.length) console.warn("因子导入失败明细", res.errors);
+    } catch (e) {
+      toast(e.message, true);
+    }
+  }
+
   function openFactorModal(existing = null) {
     const editing = !!existing;
     const expr = existing ? existing.expression : "rank(ts_mean(close, 20) / ts_mean(close, 60) - 1)";
@@ -3270,6 +3307,9 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
       loadHistory();
     });
     $("#newFactorBtn").addEventListener("click", () => openFactorModal());
+    $("#exportFactorsBtn").addEventListener("click", exportFactors);
+    $("#importFactorsBtn").addEventListener("click", importFactors);
+    $("#importFactorsFile").addEventListener("change", handleImportFactors);
     $("#corrBtn").addEventListener("click", openCorrelationModal);
     $("#factoryBtn").addEventListener("click", openFactory);
     $("#previewBtn").addEventListener("click", previewFactor);

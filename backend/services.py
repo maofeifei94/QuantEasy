@@ -682,6 +682,69 @@ def select_factors(payload: dict) -> dict:
     }
 
 
+def export_factors() -> dict:
+    """导出自定义因子为可移植 JSON。"""
+    factors = database.list_factors()
+    return {
+        "version": 1,
+        "exported_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "count": len(factors),
+        "factors": [
+            {
+                "name": f["name"],
+                "expression": f["expression"],
+                "description": f.get("description") or "",
+                "direction": int(f.get("direction", 1) or 1),
+            }
+            for f in factors
+        ],
+    }
+
+
+def import_factors(payload: dict) -> dict:
+    """批量导入自定义因子：校验表达式、按名称去重。"""
+    items = payload.get("factors")
+    if isinstance(items, dict):
+        items = [items]
+    if not isinstance(items, list) or not items:
+        raise ValueError("导入内容为空")
+    if len(items) > 100:
+        raise ValueError("单次最多导入 100 个因子")
+    existing = {f["name"] for f in database.list_factors()}
+    builtin_ids = {m["id"] for m in builtin.all_factors()}
+    builtin_labels = {m["label"] for m in builtin.all_factors()}
+    imported: list[str] = []
+    skipped: list[str] = []
+    errors: list[dict] = []
+    for raw in items:
+        if not isinstance(raw, dict):
+            errors.append({"name": "", "reason": "格式不正确"})
+            continue
+        name = str(raw.get("name") or raw.get("label") or "").strip()
+        expression = str(raw.get("expression") or "").strip()
+        if not name or not expression:
+            errors.append({"name": name, "reason": "名称或表达式为空"})
+            continue
+        if name in existing or name in builtin_labels or name in builtin_ids:
+            skipped.append(name)
+            continue
+        try:
+            validate(expression)
+        except FactorError as exc:
+            errors.append({"name": name, "reason": str(exc)})
+            continue
+        try:
+            direction = int(raw.get("direction") or 1)
+        except (TypeError, ValueError):
+            direction = 1
+        if direction not in (1, -1):
+            direction = 1
+        database.create_factor(name, expression, str(raw.get("description") or ""), direction)
+        existing.add(name)
+        imported.append(name)
+    return {"imported": imported, "skipped": skipped, "errors": errors}
+
+
 # --------------------------------------------------------------------------- #
 # 回测
 # --------------------------------------------------------------------------- #
