@@ -98,10 +98,41 @@ def _target_weights(
     return target
 
 
+def _vol_target_scale(close: jnp.ndarray, target: jnp.ndarray,
+                      rebalance: jnp.ndarray, vol_target: float,
+                      lookback: int) -> jnp.ndarray:
+    """按目标年化波动率缩放仓位：用目标持仓的前向填充权重估计滚动已实现波动。"""
+    T, N = close.shape
+
+    def _fill(carry, x):
+        rb, w = x
+        new = jnp.where(rb, w, carry)
+        return new, new
+
+    _, held = jax.lax.scan(_fill, jnp.zeros(N, dtype=close.dtype), (rebalance, target))
+    prev = jnp.concatenate([close[:1], close[:-1]], axis=0)
+    rets = jnp.nan_to_num(close / jnp.maximum(prev, 1e-12) - 1.0, nan=0.0)
+    rets = jnp.clip(rets, -0.25, 0.25)
+    pnl = jnp.sum(held * rets, axis=1)
+
+    idx = jnp.arange(T)
+    start = jnp.maximum(idx - lookback + 1, 0)
+    c1 = jnp.concatenate([jnp.zeros((1,), dtype=pnl.dtype), jnp.cumsum(pnl)])
+    c2 = jnp.concatenate([jnp.zeros((1,), dtype=pnl.dtype), jnp.cumsum(pnl * pnl)])
+    s1 = c1[idx + 1] - c1[start]
+    s2 = c2[idx + 1] - c2[start]
+    cnt = (idx - start + 1).astype(pnl.dtype)
+    var = jnp.maximum(s2 / cnt - (s1 / cnt) ** 2, 0.0)
+    vol = jnp.sqrt(var) * jnp.sqrt(252.0)
+    scale = jnp.minimum(1.0, vol_target / jnp.maximum(vol, 1e-6))
+    return jnp.where(cnt >= 10.0, scale, 1.0)
+
+
 @partial(jax.jit, static_argnames=(
     "top_n", "long_short", "weighting", "max_weight", "constraints",
     "use_override", "stop_loss", "take_profit", "trailing_stop",
     "industry_cap", "n_industries", "min_hold", "turnover_cap", "position_cap",
+    "vol_target", "vol_lookback",
 ))
 def _simulate(
     score: jnp.ndarray,
@@ -132,6 +163,8 @@ def _simulate(
     min_hold: int,
     turnover_cap: float,
     position_cap: float,
+    vol_target: float,
+    vol_lookback: int,
 ):
     T, N = score.shape
     if use_override:
@@ -146,6 +179,10 @@ def _simulate(
             weighting, max_weight, vol, timing,
             industry_idx, industry_cap, n_industries, position_cap,
         )
+
+    if vol_target > 0:
+        scale = _vol_target_scale(close, target, rebalance, vol_target, vol_lookback)
+        target = target * scale[:, None]
 
     use_stop = stop_loss > 0 or take_profit > 0 or trailing_stop > 0
 
@@ -309,6 +346,8 @@ def run_backtest(
     min_hold_days: int = 0,
     turnover_cap: float = 0.0,
     position_cap: float = 1.0,
+    vol_target: float = 0.0,
+    vol_lookback: int = 20,
 ) -> dict[str, Any]:
     score_j = jnp.asarray(score, dtype=jnp.float64)
     close_j = jnp.asarray(close, dtype=jnp.float64)
@@ -335,6 +374,7 @@ def run_backtest(
         float(stop_loss), float(take_profit), float(trailing_stop),
         ind_j, float(industry_cap), int(n_industries),
         int(min_hold_days), float(turnover_cap), float(position_cap),
+        float(vol_target), int(vol_lookback),
     )
     m = _metrics(net, nav, dw)
 

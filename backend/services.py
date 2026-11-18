@@ -1276,6 +1276,13 @@ def _trade_friction_args(payload: dict):
     return hold, cap
 
 
+def _vol_target_args(payload: dict):
+    """目标年化波动率（百分比）与估计窗口。"""
+    pct = max(0.0, min(float(payload.get("vol_target_pct") or 0), 100.0))
+    lookback = max(5, min(int(payload.get("vol_lookback") or 20), 120))
+    return pct / 100.0, lookback
+
+
 def _industry_cap_args(payload: dict, data: dict):
     """解析行业总权重上限参数，返回 (industry_idx, cap, n_industries)。"""
     cap = max(0.0, min(float(payload.get("industry_cap") or 0), 100.0)) / 100.0
@@ -1330,6 +1337,7 @@ def run_backtest(payload: dict) -> dict:
     position_cap = _position_cap(payload)
     industry_idx, industry_cap, n_industries = _industry_cap_args(payload, data)
     min_hold_days, turnover_cap = _trade_friction_args(payload)
+    vol_target, vol_lookback = _vol_target_args(payload)
     buy_block = sell_block = None
     if trade_constraints:
         rets = data["returns"]
@@ -1348,6 +1356,7 @@ def run_backtest(payload: dict) -> dict:
         stop_loss=stop_loss, take_profit=take_profit, trailing_stop=trailing_stop,
         industry_idx=industry_idx, industry_cap=industry_cap, n_industries=n_industries,
         min_hold_days=min_hold_days, turnover_cap=turnover_cap, position_cap=position_cap,
+        vol_target=vol_target, vol_lookback=vol_lookback,
     )
     bench = sim["benchmark"]
     benchmark_name = "股票池等权"
@@ -1492,6 +1501,8 @@ def run_backtest(payload: dict) -> dict:
             "max_weight": max_weight * 100,
             "industry_cap": industry_cap * 100,
             "max_position_pct": position_cap * 100,
+            "vol_target_pct": vol_target * 100,
+            "vol_lookback": vol_lookback,
             "min_hold_days": min_hold_days,
             "turnover_cap_pct": turnover_cap * 100,
             "market_timing": timing_window > 1,
