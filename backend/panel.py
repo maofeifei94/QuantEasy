@@ -80,5 +80,15 @@ def build_panel(
     )
     arrays["dates"] = dates
     arrays["codes"] = code_list
-    arrays["names"] = database.get_stock_names(code_list)
+    meta = database.get_stock_meta(code_list)
+    arrays["names"] = {c: meta.get(c, {}).get("name", c) for c in code_list}
+    industries = {c: meta.get(c, {}).get("industry", "未分类") for c in code_list}
+    industry_names = sorted(set(industries.values()))
+    industry_pos = {name: i for i, name in enumerate(industry_names)}
+    arrays["industries"] = industries
+    arrays["industry_names"] = industry_names
+    arrays["industry_idx"] = np.array(
+        [industry_pos[industries[c]] for c in code_list], dtype=np.int32
+    )
+    arrays["n_industries"] = len(industry_names)
     return arrays

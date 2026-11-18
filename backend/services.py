@@ -12,6 +12,7 @@ from . import database, jobs, panel
 from .backtest import engine as bt_engine
 from .datasources import miniqmt, synthetic
 from .factors import analysis, builtin
+from .factors import preprocess as pre_mod
 from .factors.engine import FactorError, compute, validate
 
 
@@ -147,10 +148,7 @@ def resolve_factor(payload: dict) -> dict:
     direction = int(payload.get("direction") or direction)
     if direction not in (1, -1):
         direction = 1
-    try:
-        validate(expression)
-    except FactorError:
-        raise
+    validate(expression)
     return {
         "id": factor_id,
         "label": label,
@@ -159,6 +157,33 @@ def resolve_factor(payload: dict) -> dict:
         "direction": direction,
         "is_custom": is_custom,
     }
+
+
+def _resolve_factor_specs(payload: dict) -> list[dict]:
+    """支持单因子（factor_id/expression）与多因子组合（factors 列表）。"""
+    items = payload.get("factors")
+    specs: list[dict] = []
+    if isinstance(items, list) and items:
+        for item in items:
+            if isinstance(item, str):
+                item = {"factor_id": item}
+            if not isinstance(item, dict):
+                continue
+            spec = resolve_factor(item)
+            spec["weight"] = float(item.get("weight", 1) or 0)
+            specs.append(spec)
+    else:
+        spec = resolve_factor(payload)
+        spec["weight"] = 1.0
+        specs.append(spec)
+    if not specs:
+        raise FactorError("请至少选择一个因子")
+    total = sum(abs(s["weight"]) for s in specs)
+    if total <= 1e-12:
+        raise FactorError("因子权重之和不能为 0")
+    for spec in specs:
+        spec["weight"] = spec["weight"] / total
+    return specs
 
 
 def _prepare(payload: dict):
@@ -170,11 +195,88 @@ def _prepare(payload: dict):
     start = payload.get("start") or None
     end = payload.get("end") or None
     data = panel.build_panel(codes, start, end)
-    factor = resolve_factor(payload)
-    raw = compute(factor["expression"], data)
-    score = raw * factor["direction"]
-    factor["raw"] = raw
+
+    specs = _resolve_factor_specs(payload)
+    options = payload.get("preprocess") or {}
+    multi = len(specs) > 1
+
+    components = []
+    for spec in specs:
+        raw = compute(spec["expression"], data)
+        scored = pre_mod.apply_preprocess(
+            raw * spec["direction"], data, options, force_standardize=multi
+        )
+        components.append(np.asarray(scored))
+
+    if multi:
+        stack = np.stack(components)
+        weights = np.asarray([s["weight"] for s in specs]).reshape(-1, 1, 1)
+        numerator = np.nansum(stack * weights, axis=0)
+        denominator = np.nansum(np.where(np.isfinite(stack), np.abs(weights), 0.0), axis=0)
+        score = np.where(denominator > 1e-12, numerator / np.maximum(denominator, 1e-12), np.nan)
+    else:
+        score = components[0]
+
+    factor = {
+        "label": specs[0]["label"] if not multi else " + ".join(s["label"] for s in specs),
+        "expression": specs[0]["expression"] if not multi else " | ".join(s["expression"] for s in specs),
+        "direction": specs[0]["direction"] if not multi else 1,
+        "is_multi": multi,
+        "factors": [
+            {
+                "label": s["label"],
+                "direction": s["direction"],
+                "weight": round(float(s["weight"]), 4),
+                "expression": s["expression"],
+            }
+            for s in specs
+        ],
+        "preprocess": {
+            "winsorize": bool(options.get("winsorize")),
+            "neutralize": bool(options.get("neutralize")),
+            "standardize": bool(options.get("standardize")) or multi,
+        },
+    }
     return data, factor, score
+
+
+# --------------------------------------------------------------------------- #
+# 股票池过滤
+# --------------------------------------------------------------------------- #
+def _apply_filters(data: dict, filters: dict | None) -> np.ndarray:
+    filters = filters or {}
+    valid = data["valid"].copy()
+    codes = data["codes"]
+
+    exclude_star = filters.get("exclude_star", True)
+    exclude_bj = filters.get("exclude_bj", True)
+    for j, code in enumerate(codes):
+        base = code.split(".")[0]
+        if exclude_star and base.startswith("688"):
+            valid[:, j] = False
+        if exclude_bj and (base.startswith("8") or base.startswith("4")):
+            valid[:, j] = False
+
+    min_days = int(filters.get("min_list_days") or 0)
+    if min_days > 0:
+        tradable = data["tradable"]
+        for j in range(len(codes)):
+            idx = np.where(tradable[:, j])[0]
+            if idx.size == 0:
+                valid[:, j] = False
+            else:
+                valid[: idx[0] + min_days, j] = False
+
+    min_amount = float(filters.get("min_amount") or 0)
+    if min_amount > 0:
+        amount = data["amount"]
+        n = 20
+        cs = np.cumsum(np.vstack([np.zeros((1, amount.shape[1])), amount]), axis=0)
+        roll = np.full_like(amount, np.nan)
+        if amount.shape[0] >= n:
+            roll[n - 1:] = (cs[n:] - cs[:-n]) / n
+        valid &= np.nan_to_num(roll, nan=0.0) >= min_amount * 1e8
+    return valid
 
 
 # --------------------------------------------------------------------------- #
@@ -182,9 +284,10 @@ def _prepare(payload: dict):
 # --------------------------------------------------------------------------- #
 def factor_preview(payload: dict) -> dict:
     data, factor, score = _prepare(payload)
+    valid = _apply_filters(data, payload.get("filters"))
     horizon = int(payload.get("horizon") or 5)
     result = analysis.analyze(
-        score, data["close"], data["valid"], data["dates"], data["codes"],
+        score, data["close"], valid, data["dates"], data["codes"],
         data["names"], horizon=horizon,
     )
     return {
@@ -192,6 +295,8 @@ def factor_preview(payload: dict) -> dict:
             "label": factor["label"],
             "expression": factor["expression"],
             "direction": factor["direction"],
+            "factors": factor["factors"],
+            "preprocess": factor["preprocess"],
         },
         "universe": {
             "stocks": len(data["codes"]),
@@ -203,17 +308,40 @@ def factor_preview(payload: dict) -> dict:
     }
 
 
+def factor_correlation(payload: dict) -> dict:
+    """多个因子之间的平均截面秩相关系数矩阵。"""
+    factor_ids = payload.get("factor_ids") or []
+    if len(factor_ids) < 2:
+        raise ValueError("至少选择两个因子")
+    if len(factor_ids) > 8:
+        raise ValueError("最多分析 8 个因子")
+    codes = payload.get("codes") or None
+    data = panel.build_panel(codes, payload.get("start") or None, payload.get("end") or None)
+    specs = [resolve_factor({"factor_id": fid}) for fid in factor_ids]
+    scores = [
+        np.asarray(compute(spec["expression"], data) * spec["direction"])
+        for spec in specs
+    ]
+    matrix = analysis.mean_factor_correlation(scores, data["valid"])
+    return {
+        "labels": [s["label"] for s in specs],
+        "matrix": [
+            [round(float(v), 3) if np.isfinite(v) else None for v in row]
+            for row in matrix
+        ],
+    }
+
+
 # --------------------------------------------------------------------------- #
 # 回测
 # --------------------------------------------------------------------------- #
-def _rebalance_mask(score: np.ndarray, freq: int) -> tuple[np.ndarray, int]:
+def _rebalance_mask(score: np.ndarray, valid: np.ndarray, freq: int) -> tuple[np.ndarray, int]:
     T, N = score.shape
-    finite = np.isfinite(score)
-    usable = finite.sum(axis=1)
+    usable = (np.isfinite(score) & valid).sum(axis=1)
     min_stocks = max(2, min(10, N))
     eligible = np.where(usable >= min_stocks)[0]
     if eligible.size == 0:
-        raise ValueError("因子在所选区间内没有足够的有效值，请检查表达式或扩大股票池")
+        raise ValueError("因子在所选区间内没有足够的有效值，请检查表达式或放宽过滤条件")
     warmup = int(eligible[0])
     mask = np.zeros(T, dtype=bool)
     mask[warmup::max(1, freq)] = True
@@ -261,51 +389,115 @@ def _holdings(dates: list[str], weights: np.ndarray, rebalance: np.ndarray,
     return out
 
 
+def _market_benchmark(dates: list[str], start: str, end: str) -> np.ndarray:
+    """全市场等权基准净值（用于自选股票池时比较）。"""
+    allp = panel.build_panel(None, start, end)
+    all_dates = allp["dates"]
+    if len(all_dates) < 2:
+        return np.ones(len(dates))
+    close, valid = allp["close"], allp["valid"]
+    weights = valid.astype(np.float64)
+    weights /= np.maximum(weights.sum(axis=1, keepdims=True), 1.0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rets = close[1:] / close[:-1] - 1.0
+    rets = np.nan_to_num(rets, nan=0.0, posinf=0.0, neginf=0.0)
+    market_rets = np.sum(weights[:-1] * rets, axis=1)
+    pos = {d: i for i, d in enumerate(all_dates)}
+    aligned = []
+    for d in dates[1:]:
+        k = pos.get(d)
+        aligned.append(float(market_rets[k - 1]) if k and k >= 1 else 0.0)
+    return np.concatenate([[1.0], np.cumprod(1.0 + np.asarray(aligned))])
+
+
+def _extended_metrics(net: np.ndarray, bench_nav: np.ndarray,
+                      monthly: list[dict]) -> dict:
+    out: dict[str, float] = {}
+    if len(bench_nav) > 1 and len(net) > 1:
+        bench_ret = bench_nav[1:] / bench_nav[:-1] - 1.0
+        n = min(len(net), len(bench_ret))
+        a, b = net[-n:], bench_ret[-n:]
+        var_b = np.var(b, ddof=1) if n > 1 else 0.0
+        beta = float(np.cov(a, b, ddof=1)[0, 1] / var_b) if var_b > 1e-12 else 0.0
+        alpha = float((np.mean(a) - beta * np.mean(b)) * 252)
+        active = a - b
+        tracking = float(np.std(active, ddof=1) * np.sqrt(252)) if n > 1 else 0.0
+        info_ratio = float(np.mean(active) / np.std(active, ddof=1) * np.sqrt(252)) \
+            if n > 1 and np.std(active, ddof=1) > 1e-12 else 0.0
+        downside = a[a < 0]
+        downside_vol = float(np.std(downside, ddof=1) * np.sqrt(252)) if downside.size > 1 else 0.0
+        sortino = float(np.mean(a) * np.sqrt(252) / np.std(downside, ddof=1)) \
+            if downside.size > 1 and np.std(downside, ddof=1) > 1e-12 else 0.0
+        out.update({
+            "alpha": round(alpha, 4),
+            "beta": round(beta, 3),
+            "tracking_error": round(tracking, 4),
+            "information_ratio": round(info_ratio, 3),
+            "downside_volatility": round(downside_vol, 4),
+            "sortino": round(sortino, 3),
+        })
+    if monthly:
+        values = np.array([m["return"] for m in monthly], dtype=np.float64)
+        out["monthly_win_rate"] = round(float(np.mean(values > 0)), 3)
+        out["best_month"] = round(float(values.max()), 4)
+        out["worst_month"] = round(float(values.min()), 4)
+    return out
+
+
 def run_backtest(payload: dict) -> dict:
     data, factor, score = _prepare(payload)
     dates, codes = data["dates"], data["codes"]
-    close, valid = data["close"], data["valid"]
+    close = data["close"]
+    valid = _apply_filters(data, payload.get("filters"))
 
-    freq = int(payload.get("rebalance_days") or 10)
-    rebalance, warmup = _rebalance_mask(score, max(1, min(freq, 120)))
+    freq = max(1, min(int(payload.get("rebalance_days") or 10), 120))
+    rebalance, warmup = _rebalance_mask(score, valid, freq)
     top_n = int(payload.get("top_n") or 0)
     top_frac = float(payload.get("top_pct") or 0.2)
     commission = float(payload.get("commission_bps") or 15) / 10000.0
     long_short = bool(payload.get("long_short") or False)
+    benchmark_type = payload.get("benchmark") or "universe"
 
     sim = bt_engine.run_backtest(
         score=score, close=close, valid=valid, rebalance=rebalance,
         top_frac=top_frac, top_n=top_n, long_short=long_short,
         commission=commission,
     )
-    metrics = sim["metrics"]
     bench = sim["benchmark"]
+    if benchmark_type == "market":
+        try:
+            bench = _market_benchmark(dates, dates[0], dates[-1])
+            sim["benchmark"] = bench
+        except Exception:
+            benchmark_type = "universe"
+
+    metrics = sim["metrics"]
     bench_total = float(bench[-1] - 1)
     bench_annual = float((bench[-1]) ** (252 / max(len(bench) - 1, 1)) - 1)
+    monthly = _monthly_returns(dates, sim["nav"])
     metrics.update({
         "benchmark_total_return": round(bench_total, 4),
         "benchmark_annual_return": round(bench_annual, 4),
         "excess_annual_return": round(metrics["annual_return"] - bench_annual, 4),
     })
+    metrics.update(_extended_metrics(np.asarray(sim["returns"]), np.asarray(bench), monthly))
     metrics = {k: round(v, 4) for k, v in metrics.items()}
     metrics["trade_days"] = int(metrics["trade_days"])
 
-    # 持仓数量
     w = sim["weights"]
-    pos_counts = (np.abs(w[rebalance]).sum(axis=1) > 1e-9)
-    metrics["rebalance_count"] = int(pos_counts.sum())
+    metrics["rebalance_count"] = int((np.abs(w[rebalance]).sum(axis=1) > 1e-9).sum()) if rebalance.any() else 0
     metrics["avg_positions"] = int(np.mean(
         (np.abs(w[rebalance]) > 1e-6).sum(axis=1)
     )) if rebalance.any() else 0
 
     analysis_res = analysis.analyze(
-        score, close, valid, dates, codes, data["names"],
-        horizon=5,
+        score, close, valid, dates, codes, data["names"], horizon=5,
     )
 
     def r(arr, nd=5):
         return [round(float(x), nd) if np.isfinite(x) else None for x in arr]
 
+    cfg_name = payload.get("name") or f"{factor['label']} 回测"
     result = {
         "dates": dates,
         "nav": r(sim["nav"], 4),
@@ -314,13 +506,16 @@ def run_backtest(payload: dict) -> dict:
         "daily_returns": r(sim["returns"], 5),
         "turnover": r(sim["turnover"], 4),
         "metrics": metrics,
-        "monthly": _monthly_returns(dates, sim["nav"]),
+        "monthly": monthly,
         "holdings": _holdings(dates, w, rebalance, data["names"], codes),
         "factor": {
             "label": factor["label"],
             "expression": factor["expression"],
             "direction": factor["direction"],
+            "factors": factor["factors"],
+            "preprocess": factor["preprocess"],
             "ic": analysis_res["ic"],
+            "ic_by_year": analysis_res["ic_by_year"],
             "ic_decay": analysis_res["ic_decay"],
             "quantile_returns": analysis_res["quantile_returns"],
         },
@@ -332,7 +527,7 @@ def run_backtest(payload: dict) -> dict:
             "warmup": warmup,
         },
         "config": {
-            "name": payload.get("name") or f"{factor['label']} 回测",
+            "name": cfg_name,
             "codes": codes,
             "start": dates[0],
             "end": dates[-1],
@@ -341,16 +536,69 @@ def run_backtest(payload: dict) -> dict:
             "top_pct": top_frac,
             "commission_bps": commission * 10000,
             "long_short": long_short,
+            "benchmark": benchmark_type,
+            "filters": payload.get("filters") or {},
+            "preprocess": factor["preprocess"],
+            "factors": factor["factors"],
         },
     }
     bt_id = database.save_backtest(
-        result["config"]["name"],
+        cfg_name,
         {**result["config"], "factor": result["factor"]},
         metrics, result,
     )
     result["id"] = bt_id
     result["saved"] = True
     return result
+
+
+def optimize_backtest(payload: dict) -> dict:
+    """参数扫描：调仓周期 × 持仓数量，返回绩效网格（不写入历史）。"""
+    data, factor, score = _prepare(payload)
+    valid = _apply_filters(data, payload.get("filters"))
+    rebs = sorted({int(x) for x in (payload.get("rebalance_grid") or [5, 10, 21])
+                   if 1 <= int(x) <= 120})[:4]
+    tops = sorted({int(x) for x in (payload.get("top_grid") or [5, 10, 20])
+                   if 1 <= int(x) <= 100})[:4]
+    if not rebs or not tops:
+        raise ValueError("参数扫描范围不能为空")
+    commission = float(payload.get("commission_bps") or 15) / 10000.0
+    long_short = bool(payload.get("long_short") or False)
+
+    cells = []
+    for freq in rebs:
+        rebalance, _ = _rebalance_mask(score, valid, freq)
+        for top_n in tops:
+            sim = bt_engine.run_backtest(
+                score=score, close=data["close"], valid=valid, rebalance=rebalance,
+                top_frac=0.2, top_n=top_n, long_short=long_short,
+                commission=commission,
+            )
+            m = sim["metrics"]
+            cells.append({
+                "rebalance_days": freq,
+                "top_n": top_n,
+                "annual_return": round(m["annual_return"], 4),
+                "total_return": round(m["total_return"], 4),
+                "sharpe": round(m["sharpe"], 3),
+                "max_drawdown": round(m["max_drawdown"], 4),
+                "annual_turnover": round(m["annual_turnover"], 2),
+            })
+    best = max(cells, key=lambda c: c["sharpe"])
+    return {
+        "rebalance_days": rebs,
+        "top_n": tops,
+        "cells": cells,
+        "best": best,
+        "factor": {"label": factor["label"], "factors": factor["factors"]},
+        "base": {
+            "start": data["dates"][0],
+            "end": data["dates"][-1],
+            "stocks": len(data["codes"]),
+            "commission_bps": commission * 10000,
+            "long_short": long_short,
+        },
+    }
 
 
 def get_factor_series(payload: dict) -> dict:

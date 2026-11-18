@@ -150,6 +150,26 @@ def factor_series(payload: dict = Body(...)) -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/api/factors/correlation")
+def factor_correlation(payload: dict = Body(...)) -> dict:
+    try:
+        return services.factor_correlation(payload)
+    except (FactorError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/backtest/optimize")
+def optimize_backtest(payload: dict = Body(...)) -> dict:
+    try:
+        return services.optimize_backtest(payload)
+    except (FactorError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"参数扫描失败：{exc}") from exc
+
+
 @app.post("/api/backtest")
 def backtest(payload: dict = Body(...)) -> dict:
     try:

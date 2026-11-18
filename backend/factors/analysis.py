@@ -119,6 +119,15 @@ def analyze(score: np.ndarray, close: np.ndarray, valid: np.ndarray,
         step = max(1, len(ic_pairs) // 400)
         ic_pairs = ic_pairs[::step]
 
+    year_values: dict[str, list[float]] = {}
+    for i, d in enumerate(dates):
+        if np.isfinite(ic_series[i]):
+            year_values.setdefault(d[:4], []).append(float(ic_series[i]))
+    ic_by_year = [
+        {"year": y, "ic": round(float(np.mean(v)), 4), "days": len(v)}
+        for y, v in sorted(year_values.items())
+    ]
+
     return {
         "horizon": horizon,
         "ic": {
@@ -128,6 +137,7 @@ def analyze(score: np.ndarray, close: np.ndarray, valid: np.ndarray,
             "positive_rate": round(positive, 3),
             "series": ic_pairs,
         },
+        "ic_by_year": ic_by_year,
         "ic_decay": ic_decay,
         "quantile_returns": quantile_returns,
         "sample_series": sample,
@@ -137,3 +147,32 @@ def analyze(score: np.ndarray, close: np.ndarray, valid: np.ndarray,
             "std": round(float(finite_score.std()), 5) if finite_score.size else 0.0,
         },
     }
+
+
+def mean_factor_correlation(scores: list[np.ndarray], valid: np.ndarray,
+                            min_stocks: int = 8) -> np.ndarray:
+    """多因子两两之间的平均截面秩相关系数矩阵。"""
+    k = len(scores)
+    if k == 0:
+        return np.zeros((0, 0))
+    total = np.zeros((k, k), dtype=np.float64)
+    days = 0
+    T = scores[0].shape[0]
+    for t in range(T):
+        mask = valid[t].copy()
+        for s in scores:
+            mask &= np.isfinite(s[t])
+        if mask.sum() < min_stocks:
+            continue
+        ranks = []
+        for s in scores:
+            r = _rank(s[t][mask])
+            r = (r - r.mean()) / (r.std() + 1e-12)
+            ranks.append(r)
+        mat = np.corrcoef(np.vstack(ranks))
+        if np.isfinite(mat).all():
+            total += mat
+            days += 1
+    if days == 0:
+        return np.full((k, k), np.nan)
+    return total / days

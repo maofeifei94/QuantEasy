@@ -225,6 +225,21 @@ def get_stock_names(codes: list[str]) -> dict[str, str]:
     return {r["code"]: r["name"] for r in rows}
 
 
+def get_stock_meta(codes: list[str]) -> dict[str, dict[str, str]]:
+    """返回 code -> {name, industry} 映射。"""
+    if not codes:
+        return {}
+    placeholders = ",".join("?" for _ in codes)
+    with get_conn() as conn:
+        rows = conn.execute(
+            f"SELECT code,name,industry FROM stocks WHERE code IN ({placeholders})", codes
+        ).fetchall()
+    return {
+        r["code"]: {"name": r["name"] or r["code"], "industry": r["industry"] or "未分类"}
+        for r in rows
+    }
+
+
 def list_factors() -> list[dict[str, Any]]:
     with get_conn() as conn:
         rows = conn.execute("SELECT * FROM custom_factors ORDER BY id").fetchall()

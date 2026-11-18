@@ -11,6 +11,8 @@
     factors: [],
     selectedFactor: null,
     universe: new Set(),
+    btFactors: [],
+    compare: new Set(),
     btResult: null,
     syncTimer: null,
     stockFilter: "",
@@ -226,6 +228,17 @@
     });
   }
 
+  function movingAverage(values, n) {
+    const out = new Array(values.length).fill(null);
+    let sum = 0;
+    for (let i = 0; i < values.length; i++) {
+      sum += values[i];
+      if (i >= n) sum -= values[i - n];
+      if (i >= n - 1) out[i] = sum / n;
+    }
+    return out;
+  }
+
   async function openStockModal(code) {
     try {
       const data = await api(`/api/stocks/${encodeURIComponent(code)}/bars`);
@@ -237,10 +250,21 @@
           </div>
           <button class="icon-btn" data-close>✕</button>
         </div>
-        <div class="chart-wrap"><canvas id="candleChart"></canvas></div>`, true);
+        <div class="chart-wrap"><canvas id="candleChart"></canvas></div>
+        <div class="kline-legend">
+          <span class="it"><span class="sw" style="background:#f5b56b"></span>MA5</span>
+          <span class="it"><span class="sw" style="background:#6aa9ff"></span>MA20</span>
+          <span class="it"><span class="sw" style="background:#a78bfa"></span>MA60</span>
+        </div>`, true);
+      const mas = [
+        { name: "MA5", color: "#f5b56b", data: movingAverage(data.close, 5) },
+        { name: "MA20", color: "#6aa9ff", data: movingAverage(data.close, 20) },
+        { name: "MA60", color: "#a78bfa", data: movingAverage(data.close, 60) },
+      ];
       Charts.candle($("#candleChart"), {
         dates: data.dates, open: data.open, high: data.high,
         low: data.low, close: data.close, volume: data.volume, height: 380,
+        ma: mas,
       });
     } catch (e) {
       toast(e.message, true);
@@ -337,8 +361,15 @@
   async function loadFactors() {
     const data = await api("/api/factors");
     state.factors = data.items || [];
+    const validIds = new Set(state.factors.map((f) => String(f.id)));
+    state.btFactors = state.btFactors.filter((f) => validIds.has(String(f.id)));
+    if (!state.btFactors.length && state.factors.length) {
+      const preferred = state.factors.find((f) => String(f.id) === "momentum_20") || state.factors[0];
+      state.btFactors = [{ id: String(preferred.id), weight: 1 }];
+    }
     renderFactorList();
-    renderFactorSelect();
+    renderAddFactorSelect();
+    renderCombo();
     renderUniverseCount();
   }
 
@@ -468,6 +499,10 @@
         <div class="mcard"><div class="k">IC &gt; 0 占比</div><div class="v">${fmtPct(ic.positive_rate, 1, false)}</div><div class="s">方向稳定性</div></div>
         <div class="mcard"><div class="k">因子覆盖率</div><div class="v">${fmtPct(res.stats.coverage, 1, false)}</div><div class="s">有效值占比</div></div>
       </div>
+      ${(res.ic_by_year || []).length ? `<div class="factor-meta" style="margin:12px 0 0">
+        <span class="chip">分年度 IC</span>
+        ${res.ic_by_year.map((y) => `<span class="chip ${y.ic >= 0 ? "green" : "amber"}">${y.year} · ${fmtNum(y.ic, 3)}</span>`).join("")}
+      </div>` : ""}
       <div id="icBlock"></div>
       <div class="grid-2" style="margin-top:0">
         <div id="decayBlock"></div>
@@ -591,15 +626,57 @@
   }
 
   /* ------------------------------ 回测 ------------------------------ */
-  function renderFactorSelect() {
-    const sel = $("#btFactor");
-    const prev = sel.value;
+  function renderAddFactorSelect() {
+    const sel = $("#addFactorSelect");
+    if (!sel) return;
     sel.innerHTML = factorGroups().map(([cat, items]) =>
       `<optgroup label="${esc(cat)}">` + items.map((f) =>
         `<option value="${esc(f.id)}">${esc(f.label || f.name)}</option>`
       ).join("") + "</optgroup>"
     ).join("");
-    if (prev && state.factors.some((f) => String(f.id) === String(prev))) sel.value = prev;
+  }
+
+  function renderCombo() {
+    const box = $("#comboList");
+    if (!box) return;
+    box.innerHTML = state.btFactors.map((item) => {
+      const f = findFactorById(item.id);
+      const label = f ? (f.label || f.name) : item.id;
+      const dir = f && f.direction < 0 ? "↓" : "↑";
+      return `<div class="combo-row" data-id="${esc(item.id)}">
+        <span class="combo-name" title="${esc(f ? f.expression : "")}">${esc(label)}<small>${dir}</small></span>
+        <input class="combo-weight" type="number" step="0.1" min="-5" max="5" value="${item.weight}">
+        <button class="combo-del" data-del="${esc(item.id)}" title="移除">✕</button>
+      </div>`;
+    }).join("") || `<div class="panel-sub" style="padding:6px">请添加至少一个因子</div>`;
+
+    $$("#comboList .combo-del").forEach((btn) => btn.addEventListener("click", () => {
+      state.btFactors = state.btFactors.filter((f) => String(f.id) !== String(btn.dataset.del));
+      renderCombo();
+    }));
+    $$("#comboList .combo-weight").forEach((inp) => inp.addEventListener("change", () => {
+      const id = inp.closest(".combo-row").dataset.id;
+      const item = state.btFactors.find((f) => String(f.id) === String(id));
+      if (item) item.weight = Number(inp.value) || 0;
+    }));
+    const countEl = $("#comboCount");
+    if (countEl) {
+      countEl.textContent = state.btFactors.length > 1
+        ? `${state.btFactors.length} 个因子加权`
+        : "单因子";
+    }
+  }
+
+  function addFactorToCombo() {
+    const sel = $("#addFactorSelect");
+    const id = sel && sel.value;
+    if (!id) return;
+    if (state.btFactors.some((f) => String(f.id) === String(id))) {
+      toast("该因子已在组合中");
+      return;
+    }
+    state.btFactors.push({ id: String(id), weight: 1 });
+    renderCombo();
   }
 
   function renderUniverse() {
@@ -628,26 +705,43 @@
     el.textContent = n ? `已选 ${n} 只` : "全部股票（不限制）";
   }
 
-  async function runBacktest() {
-    const btn = $("#runBacktestBtn");
-    const codes = state.universe.size ? Array.from(state.universe) : null;
-    const payload = {
-      factor_id: $("#btFactor").value,
-      codes,
+  function buildCommonConfig() {
+    return {
+      codes: state.universe.size ? Array.from(state.universe) : null,
       start: $("#btStart").value || null,
       end: $("#btEnd").value || null,
+      factors: state.btFactors.map((f) => ({
+        factor_id: f.id, weight: Number(f.weight) || 0,
+      })),
+      preprocess: {
+        winsorize: $("#ppWinsor").checked,
+        neutralize: $("#ppNeutral").checked,
+        standardize: $("#ppStd").checked,
+      },
+      filters: {
+        exclude_star: $("#filterStar").checked,
+        exclude_bj: $("#filterBJ").checked,
+        min_amount: Number($("#filterAmount").value) || 0,
+        min_list_days: Number($("#filterDays").value) || 0,
+      },
+      benchmark: $("#btBenchmark").value,
       rebalance_days: Number($("#btRebalance").value),
       top_n: Number($("#btTopN").value) || 0,
       top_pct: Number($("#btTopPct").value) || 0.2,
       commission_bps: Number($("#btCost").value) || 0,
       long_short: $("#btLongShort").checked,
     };
+  }
+
+  async function runBacktest() {
+    const btn = $("#runBacktestBtn");
+    if (!state.btFactors.length) { toast("请至少添加一个因子", true); return; }
+    const payload = { ...buildCommonConfig(), name: payloadLabel() };
     btn.disabled = true;
     btn.innerHTML = `<span class="spinner"></span> JAX 编译中`;
-    $("#btResults").innerHTML = `<div class="panel"><div class="empty" style="border:none;padding:80px 24px"><span class="spinner" style="width:26px;height:26px;margin:0 auto 16px;display:block"></span><p>正在执行向量化回测…</p><div class="sub">首次运行需要 JAX 编译，之后会复用缓存</div></div></div>`;
+    $("#btResults").innerHTML = `<div class="panel"><div class="empty" style="border:none;padding:80px 24px"><span class="spinner" style="width:26px;height:26px;margin:0 auto 16px;display:block"></span><p>正在执行向量化回测…</p><div class="sub">多因子合成与 JAX 编译通常需要数秒</div></div></div>`;
     try {
-      const payload2 = { ...payload, name: payloadLabel() };
-      const res = await api("/api/backtest", { method: "POST", body: payload2 });
+      const res = await api("/api/backtest", { method: "POST", body: payload });
       state.btResult = res;
       renderBacktestResult(res);
       toast(`回测完成 · 年化 ${fmtPct(res.metrics.annual_return)}`);
@@ -662,10 +756,16 @@
   }
 
   function payloadLabel() {
-    const opt = $("#btFactor").selectedOptions[0];
-    const label = opt ? opt.textContent : "因子";
+    const labels = state.btFactors.map((f) => factorLabel(f.id));
+    let label = labels[0] || "因子";
+    if (labels.length > 1) label = `${labels[0]} 等 ${labels.length} 因子`;
     const n = state.universe.size;
     return `${label} · ${n ? n + "只" : "全市场"}`;
+  }
+
+  function factorLabel(id) {
+    const f = findFactorById(id);
+    return f ? (f.label || f.name) : String(id);
   }
 
   function renderBacktestResult(res) {
@@ -682,9 +782,24 @@
       ["最大回撤", fmtPct(m.max_drawdown), "neg"],
       ["年化波动", fmtPct(m.annual_volatility, 1, false), ""],
       ["胜率", fmtPct(m.win_rate, 1, false), ""],
-      ["年化换手", fmtNum(m.annual_turnover, 1) + "x", ""],
       ["超额年化", fmtPct(m.excess_annual_return), colorClass(m.excess_annual_return)],
+      ["信息比率", fmtNum(m.information_ratio), ""],
+      ["Alpha", fmtPct(m.alpha), colorClass(m.alpha)],
+      ["Beta", fmtNum(m.beta), ""],
+      ["索提诺", fmtNum(m.sortino), ""],
+      ["年化换手", fmtNum(m.annual_turnover, 1) + "x", ""],
     ];
+
+    const factorChips = (res.factor.factors || []).map((f) =>
+      `<span class="chip ${f.weight < 0 ? "amber" : "blue"}">${esc(f.label)} ${f.weight > 0 ? "+" : ""}${(f.weight * 100).toFixed(0)}%</span>`
+    ).join("");
+    const pre = res.factor.preprocess || {};
+    const preChips = [
+      pre.winsorize ? "去极值" : "",
+      pre.neutralize ? "行业中性" : "",
+      pre.standardize ? "标准化" : "",
+    ].filter(Boolean).map((p) => `<span class="chip green">${p}</span>`).join("");
+    const benchName = cfg.benchmark === "market" ? "全市场等权" : "股票池等权";
 
     $("#btResults").innerHTML = `
       <div class="panel">
@@ -698,7 +813,11 @@
               <span class="chip">${cfg.top_n > 0 ? "持仓 " + cfg.top_n : "前 " + (cfg.top_pct * 100).toFixed(0) + "%"}</span>
               <span class="chip">成本 ${fmtNum(cfg.commission_bps, 0)} bps</span>
               ${cfg.long_short ? `<span class="chip amber">多空</span>` : ""}
+              <span class="chip green">基准 · ${benchName}</span>
               <span class="chip green">已存入 SQLite</span>
+            </div>
+            <div class="factor-meta" style="margin:7px 0 0">
+              ${factorChips}${preChips}
             </div>
           </div>
         </div>
@@ -711,7 +830,7 @@
         <div class="chart-title-row">
           <div>
             <div class="panel-title" style="font-size:13.5px">策略净值曲线</div>
-            <div class="panel-sub">初始净值 = 0，单位：% · 基准为股票池等权组合</div>
+            <div class="panel-sub">初始净值 = 0，单位：% · 基准为${benchName}组合</div>
           </div>
           <span class="chip green">IC ${fmtNum(res.factor.ic.mean, 3)} · IR ${fmtNum(res.factor.ic.ir, 2)}</span>
         </div>
@@ -743,7 +862,7 @@
       labels: res.dates,
       series: [
         { name: "策略", data: navPct, color: "#3ddc97", fill: true },
-        { name: "基准(等权)", data: benchPct, color: "#6aa9ff", dash: [5, 4], width: 1.3 },
+        { name: benchName, data: benchPct, color: "#6aa9ff", dash: [5, 4], width: 1.3 },
       ],
       height: 300, yFmt: (v) => v.toFixed(0) + "%", xFmt: shortDate,
     });
@@ -802,11 +921,172 @@
     }).join("");
   }
 
+  /* ------------------------------ 参数扫描 ------------------------------ */
+  async function runParamScan() {
+    if (!state.btFactors.length) { toast("请至少添加一个因子", true); return; }
+    openModal(`
+      <div class="modal-head">
+        <div><h3>参数扫描</h3><div class="panel-sub" style="margin-top:3px">调仓周期 × 持仓数量 的绩效网格</div></div>
+        <button class="icon-btn" data-close>✕</button>
+      </div>
+      <div class="empty" style="border:none;padding:60px 20px">
+        <span class="spinner" style="width:24px;height:24px;margin:0 auto 14px;display:block"></span>
+        <p>正在扫描 9 组参数…</p>
+        <div class="sub">复用因子计算结果，逐个运行 JAX 回测</div>
+      </div>`);
+    try {
+      const res = await api("/api/backtest/optimize", {
+        method: "POST", body: buildCommonConfig(),
+      });
+      renderOptimizeModal(res);
+    } catch (e) {
+      closeModal();
+      toast(e.message, true);
+    }
+  }
+
+  function optFmt(metric, v) {
+    if (metric === "sharpe") return v == null ? "—" : Number(v).toFixed(2);
+    return fmtPct(v);
+  }
+
+  function renderOptimizeModal(res) {
+    const best = res.best;
+    openModal(`
+      <div class="modal-head">
+        <div>
+          <h3>参数扫描结果</h3>
+          <div class="panel-sub" style="margin-top:3px">${res.factor.label} · ${res.base.stocks} 只股票 · ${res.base.start} → ${res.base.end}</div>
+        </div>
+        <button class="icon-btn" data-close>✕</button>
+      </div>
+      <div class="opt-controls">
+        <div class="panel-sub">最优组合：${best.rebalance_days} 日调仓 / 持仓 ${best.top_n} · 夏普 ${fmtNum(best.sharpe)}</div>
+        <select id="optMetric">
+          <option value="sharpe">按夏普比率</option>
+          <option value="annual_return">按年化收益</option>
+          <option value="max_drawdown">按最大回撤</option>
+          <option value="annual_turnover">按年化换手</option>
+        </select>
+      </div>
+      <div id="optGrid"></div>
+      <div class="modal-foot" style="justify-content:space-between;align-items:center">
+        <span class="panel-sub">参数扫描结果不写入历史记录</span>
+        <button class="btn ghost" data-close>关闭</button>
+      </div>`, true);
+
+    const drawGrid = () => {
+      const metric = $("#optMetric").value;
+      const map = {};
+      res.cells.forEach((c) => { map[c.rebalance_days + "-" + c.top_n] = c; });
+      const values = res.cells.map((c) => c[metric]).filter((v) => v != null);
+      const min = Math.min(...values);
+      const max = Math.max(...values);
+      const cellColor = (v) => {
+        const t = max > min ? (v - min) / (max - min) : 0.5;
+        const alpha = 0.07 + t * 0.5;
+        return v >= 0 ? `rgba(255,107,122,${alpha})` : `rgba(61,220,151,${alpha})`;
+      };
+      let html = `<div class="opt-grid" style="grid-template-columns:56px repeat(${res.top_n.length}, 1fr)">`;
+      html += `<div></div>` + res.top_n.map((t) => `<div class="og-head">持仓 ${t}</div>`).join("");
+      res.rebalance_days.forEach((freq) => {
+        html += `<div class="og-label">${freq} 日</div>`;
+        res.top_n.forEach((topn) => {
+          const c = map[freq + "-" + topn];
+          const v = c ? c[metric] : null;
+          const isBest = best.rebalance_days === freq && best.top_n === topn;
+          const sub = metric === "sharpe"
+            ? `年化 ${fmtPct(c.annual_return)}`
+            : `夏普 ${fmtNum(c.sharpe)}`;
+          html += `<div class="opt-cell ${isBest ? "best" : ""}" style="background:${v == null ? "transparent" : cellColor(v)}" title="调仓 ${freq} 日 / 持仓 ${topn}\n年化 ${fmtPct(c.annual_return)}  夏普 ${fmtNum(c.sharpe)}  回撤 ${fmtPct(c.max_drawdown)}">
+            <div class="ov">${optFmt(metric, v)}</div>
+            <div class="os">${sub}</div>
+          </div>`;
+        });
+      });
+      html += "</div>";
+      $("#optGrid").innerHTML = html;
+    };
+    $("#optMetric").addEventListener("change", drawGrid);
+    drawGrid();
+  }
+
+  /* ------------------------------ 因子相关性 ------------------------------ */
+  function openCorrelationModal() {
+    const items = state.factors;
+    const defaults = new Set(items.slice(0, 5).map((f) => String(f.id)));
+    openModal(`
+      <div class="modal-head">
+        <div><h3>因子相关性矩阵</h3><div class="panel-sub" style="margin-top:3px">平均截面秩相关，识别多因子组合中的共线性</div></div>
+        <button class="icon-btn" data-close>✕</button>
+      </div>
+      <div class="corr-picker">
+        ${items.map((f) => `<label><input type="checkbox" value="${esc(f.id)}" ${defaults.has(String(f.id)) ? "checked" : ""}>
+          ${esc(f.label || f.name)} <span class="chip" style="margin-left:auto">${esc(f.is_custom ? "自定义" : (f.category || "内置"))}</span></label>`).join("")}
+      </div>
+      <div id="corrResult"></div>
+      <div class="modal-foot">
+        <button class="btn ghost" data-close>取消</button>
+        <button class="btn primary" id="corrRun">计算矩阵</button>
+      </div>`, true);
+
+    $("#corrRun").addEventListener("click", async () => {
+      const ids = $$("#modalBox .corr-picker input:checked").map((cb) => cb.value);
+      if (ids.length < 2) { toast("请至少选择两个因子", true); return; }
+      if (ids.length > 8) { toast("最多选择 8 个因子", true); return; }
+      const btn = $("#corrRun");
+      btn.disabled = true;
+      btn.innerHTML = `<span class="spinner"></span> 计算中`;
+      try {
+        const res = await api("/api/factors/correlation", {
+          method: "POST",
+          body: {
+            factor_ids: ids,
+            start: state.status && state.status.start_date,
+            end: state.status && state.status.end_date,
+          },
+        });
+        renderCorrMatrix(res);
+      } catch (e) {
+        toast(e.message, true);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "计算矩阵";
+      }
+    });
+  }
+
+  function renderCorrMatrix(res) {
+    const labels = res.labels;
+    const n = labels.length;
+    let html = `<div class="corr-grid" style="grid-template-columns:110px repeat(${n}, 1fr)">`;
+    html += `<div></div>` + labels.map((l) => `<div class="cg-head" title="${esc(l)}">${esc(l)}</div>`).join("");
+    res.matrix.forEach((row, i) => {
+      html += `<div class="cg-row-head" title="${esc(labels[i])}">${esc(labels[i])}</div>`;
+      row.forEach((v, j) => {
+        if (v == null) {
+          html += `<div class="corr-cell" style="color:var(--faint)">—</div>`;
+          return;
+        }
+        const alpha = 0.06 + Math.abs(v) * 0.5;
+        const bg = i === j ? "rgba(61,220,151,.32)"
+          : v >= 0 ? `rgba(106,169,255,${alpha})` : `rgba(245,181,107,${alpha})`;
+        html += `<div class="corr-cell" style="background:${bg}" title="${esc(labels[i])} vs ${esc(labels[j])}: ${v}">${v.toFixed(2)}</div>`;
+      });
+    });
+    html += `</div><div class="panel-sub" style="margin-top:10px">蓝色为正相关，橙色为负相关；|ρ| &gt; 0.7 的因子组合存在较强共线性。</div>`;
+    $("#corrResult").innerHTML = html;
+  }
+
+
+  /* ------------------------------ 回测记录 ------------------------------ */
   async function loadHistory() {
     const grid = $("#historyGrid");
     try {
       const data = await api("/api/backtests?limit=60");
       const items = data.items || [];
+      const existing = new Set(items.map((it) => String(it.id)));
+      state.compare = new Set([...state.compare].filter((id) => existing.has(id)));
       if (!items.length) {
         grid.innerHTML = `<div class="empty" style="grid-column:1/-1;padding:60px">
           <p>还没有回测记录</p><div class="sub">前往「回测引擎」运行第一次回测</div></div>`;
@@ -814,13 +1094,19 @@
       }
       grid.innerHTML = items.map((it) => {
         const m = it.metrics || {};
-        return `<div class="bt-card" data-id="${it.id}">
+        const selected = state.compare.has(String(it.id));
+        return `<div class="bt-card ${selected ? "selected" : ""}" data-id="${it.id}">
           <div class="top">
             <div>
               <div class="name">${esc(it.name)}</div>
               <div class="time">#${it.id} · ${esc(it.created_at)}</div>
             </div>
-            <span class="chip ${m.annual_return >= 0 ? "green" : "amber"}">${fmtPct(m.annual_return)}</span>
+            <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">
+              <span class="chip ${m.annual_return >= 0 ? "green" : "amber"}">${fmtPct(m.annual_return)}</span>
+              <label class="cmp-check" title="加入对比">
+                <input type="checkbox" data-cmp="${it.id}" ${selected ? "checked" : ""}> 对比
+              </label>
+            </div>
           </div>
           <div class="row">
             <div class="mini"><div class="k">累计收益</div><div class="v ${colorClass(m.total_return)}">${fmtPct(m.total_return)}</div></div>
@@ -830,10 +1116,85 @@
         </div>`;
       }).join("");
       $$("#historyGrid .bt-card").forEach((card) => {
-        card.addEventListener("click", () => openHistoryDetail(card.dataset.id));
+        card.addEventListener("click", (ev) => {
+          if (ev.target.closest(".cmp-check")) return;
+          openHistoryDetail(card.dataset.id);
+        });
       });
+      $$("#historyGrid .cmp-check input").forEach((cb) => {
+        cb.addEventListener("change", () => {
+          const id = cb.dataset.cmp;
+          if (cb.checked) {
+            if (state.compare.size >= 3) {
+              cb.checked = false;
+              toast("最多同时对比 3 个回测", true);
+              return;
+            }
+            state.compare.add(id);
+          } else {
+            state.compare.delete(id);
+          }
+          cb.closest(".bt-card").classList.toggle("selected", cb.checked);
+          updateCompareBar();
+        });
+      });
+      updateCompareBar();
     } catch (e) {
       grid.innerHTML = `<div class="empty" style="grid-column:1/-1"><p>${esc(e.message)}</p></div>`;
+    }
+  }
+
+  function updateCompareBar() {
+    const bar = $("#historyCompareBar");
+    const n = state.compare.size;
+    bar.style.display = n ? "flex" : "none";
+    $("#compareHint").textContent = `已选择 ${n} 个回测（最多 3 个）`;
+    $("#compareBtn").disabled = n < 2;
+    $("#compareBtn").style.opacity = n < 2 ? 0.5 : 1;
+  }
+
+  async function openCompare() {
+    const ids = Array.from(state.compare);
+    if (ids.length < 2) { toast("请至少选择两个回测", true); return; }
+    openModal(`<div class="modal-head"><div><h3>回测对比</h3></div><button class="icon-btn" data-close>✕</button></div>
+      <div class="empty" style="border:none;padding:50px"><span class="spinner" style="width:22px;height:22px;margin:0 auto 12px;display:block"></span><p>加载回测结果…</p></div>`, true);
+    try {
+      const details = await Promise.all(ids.map((id) => api(`/api/backtests/${id}`)));
+      const colors = ["#3ddc97", "#6aa9ff", "#f5b56b"];
+      const base = details[0].result;
+      const labels = base.dates;
+      const series = details.map((d, i) => {
+        const navMap = {};
+        d.result.dates.forEach((date, k) => { navMap[date] = d.result.nav[k]; });
+        return {
+          name: `#${d.id} ${d.name}`,
+          color: colors[i % colors.length],
+          data: labels.map((date) => navMap[date] != null ? (navMap[date] - 1) * 100 : null),
+        };
+      });
+      openModal(`
+        <div class="modal-head">
+          <div><h3>回测对比</h3>
+            <div class="panel-sub" style="margin-top:3px">${details.length} 条净值曲线 · 起点归一为 0%</div>
+          </div>
+          <button class="icon-btn" data-close>✕</button>
+        </div>
+        <div class="chart-wrap"><canvas id="compareChart"></canvas></div>
+        <div class="table-wrap" style="margin-top:14px;max-height:220px">
+          <table><thead><tr><th>回测</th><th>年化</th><th>夏普</th><th>最大回撤</th><th>换手</th></tr></thead>
+          <tbody>${details.map((d) => `<tr style="cursor:default"><td>${esc(d.name)} <span class="cd">#${d.id}</span></td>
+            <td class="num-mono ${colorClass(d.metrics.annual_return)}">${fmtPct(d.metrics.annual_return)}</td>
+            <td class="num-mono">${fmtNum(d.metrics.sharpe)}</td>
+            <td class="num-mono">${fmtPct(d.metrics.max_drawdown)}</td>
+            <td class="num-mono">${fmtNum(d.metrics.annual_turnover, 1)}x</td></tr>`).join("")}</tbody></table>
+        </div>`, true);
+      Charts.line($("#compareChart"), {
+        labels, series, height: 320,
+        yFmt: (v) => v.toFixed(0) + "%", xFmt: shortDate,
+      });
+    } catch (e) {
+      closeModal();
+      toast(e.message, true);
     }
   }
 
@@ -872,9 +1233,17 @@
       renderStocks();
     });
     $("#newFactorBtn").addEventListener("click", openFactorModal);
+    $("#corrBtn").addEventListener("click", openCorrelationModal);
     $("#previewBtn").addEventListener("click", previewFactor);
+    $("#addFactorBtn").addEventListener("click", addFactorToCombo);
     $("#runBacktestBtn").addEventListener("click", runBacktest);
+    $("#optimizeBtn").addEventListener("click", runParamScan);
     $("#refreshHistory").addEventListener("click", loadHistory);
+    $("#compareBtn").addEventListener("click", openCompare);
+    $("#clearCompare").addEventListener("click", () => {
+      state.compare.clear();
+      loadHistory();
+    });
     $("#universeAll").addEventListener("click", (e) => {
       e.preventDefault();
       state.stocks.forEach((s) => state.universe.add(s.code));

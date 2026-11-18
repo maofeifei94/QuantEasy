@@ -69,11 +69,11 @@
         <div class="hero-copy">
           <div class="hero-tag">
             <span class="chip green">JAX 向量化</span>
-            <span class="chip blue">SQLite 本地仓</span>
+            <span class="chip blue">多因子 · 行业中性</span>
             <span class="chip amber">miniQMT</span>
           </div>
           <h3>A股多因子研究<br><em>从因子到回测的一站式引擎</em></h3>
-          <p>内置 14 个横截面与时序因子，支持自定义表达式快速构造 Alpha，JAX 加速的全市场向量化回测，数秒内得到净值、IC 与归因结果。</p>
+          <p>内置 14 个常用因子，支持多因子加权、MAD 去极值与行业中性化，股票池过滤后可一键完成向量化回测、参数扫描与绩效归因。</p>
           <div class="hero-actions">
             <button class="btn primary" data-goto="factors">进入因子实验室</button>
             <button class="btn ghost" data-goto="backtest">运行一次回测 →</button>
@@ -205,7 +205,10 @@
         <div class="panel" style="padding:14px">
           <div style="display:flex;justify-content:space-between;align-items:center;padding:2px 4px 10px">
             <div class="panel-title" style="font-size:13.5px">因子库</div>
-            <button class="btn sm" id="newFactorBtn">＋ 新建</button>
+            <div class="form-row" style="gap:6px">
+              <button class="btn sm" id="corrBtn">相关性</button>
+              <button class="btn sm" id="newFactorBtn">＋ 新建</button>
+            </div>
           </div>
           <div class="factor-list" id="factorList"></div>
         </div>
@@ -252,8 +255,20 @@
           </div>
 
           <div class="field">
-            <label>因子</label>
-            <select id="btFactor"></select>
+            <label>因子组合 <span class="hint" id="comboCount">多因子加权合成</span></label>
+            <div class="combo-list" id="comboList"></div>
+            <div class="combo-add">
+              <select id="addFactorSelect"></select>
+              <button class="btn sm" id="addFactorBtn">＋ 添加</button>
+            </div>
+          </div>
+          <div class="field" style="margin-top:12px">
+            <label>因子预处理</label>
+            <div class="switch-row">
+              <label class="switch"><input type="checkbox" id="ppWinsor"><span class="track"></span><span>MAD 去极值</span></label>
+              <label class="switch"><input type="checkbox" id="ppNeutral"><span class="track"></span><span>行业中性</span></label>
+              <label class="switch"><input type="checkbox" id="ppStd" checked><span class="track"></span><span>标准化</span></label>
+            </div>
           </div>
           <div class="form-grid">
             <div class="field">
@@ -280,6 +295,23 @@
           </div>
 
           <div class="form-divider"></div>
+          <div class="panel-sub" style="margin-bottom:8px">股票池过滤</div>
+          <div class="form-grid">
+            <div class="field">
+              <label>最小日均成交额 <span class="hint">亿元</span></label>
+              <input type="number" id="filterAmount" value="0" min="0" step="0.5">
+            </div>
+            <div class="field">
+              <label>最少上市天数</label>
+              <input type="number" id="filterDays" value="0" min="0" step="20">
+            </div>
+          </div>
+          <div class="switch-row" style="margin-top:10px">
+            <label class="switch"><input type="checkbox" id="filterStar" checked><span class="track"></span><span>剔除科创板</span></label>
+            <label class="switch"><input type="checkbox" id="filterBJ" checked><span class="track"></span><span>剔除北交所</span></label>
+          </div>
+
+          <div class="form-divider"></div>
           <div class="form-grid">
             <div class="field">
               <label>调仓周期 <span class="hint">交易日</span></label>
@@ -303,13 +335,23 @@
               <input type="number" id="btCost" value="15" min="0" max="100">
             </div>
           </div>
+          <div class="field" style="margin-top:12px">
+            <label>业绩基准</label>
+            <select id="btBenchmark">
+              <option value="universe">股票池等权</option>
+              <option value="market">全市场等权</option>
+            </select>
+          </div>
           <div class="form-row" style="margin-top:14px;justify-content:space-between">
             <label class="switch">
               <input type="checkbox" id="btLongShort">
               <span class="track"></span>
               <span>多空组合</span>
             </label>
-            <button class="btn primary" id="runBacktestBtn">运行回测</button>
+            <div class="form-row">
+              <button class="btn" id="optimizeBtn">参数扫描</button>
+              <button class="btn primary" id="runBacktestBtn">运行回测</button>
+            </div>
           </div>
           <div class="panel-sub" id="btWarmupHint" style="margin-top:12px">因子前期需要预热窗口，回测会自动跳过缺失期。</div>
         </div>
@@ -334,6 +376,13 @@
           <div class="panel-sub">所有回测结果均持久化在 SQLite（backtests 表）中</div>
         </div>
         <button class="btn sm" id="refreshHistory">刷新</button>
+      </div>
+      <div id="historyCompareBar" class="compare-bar" style="display:none">
+        <span id="compareHint">已选择 0 个回测</span>
+        <div class="form-row">
+          <button class="btn sm" id="clearCompare">清空</button>
+          <button class="btn sm primary" id="compareBtn">对比所选</button>
+        </div>
       </div>
       <div class="history-grid" id="historyGrid" style="margin-top:14px"></div>
     </section>
