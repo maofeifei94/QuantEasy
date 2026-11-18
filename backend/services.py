@@ -1196,6 +1196,14 @@ def _industry_exposure(weights: np.ndarray, rebalance: np.ndarray,
     return sorted(out, key=lambda x: -abs(x["last"]))
 
 
+def _position_cap(payload: dict) -> float:
+    """最大总仓位比例，0 或 100 表示满仓。"""
+    pct = float(payload.get("max_position_pct") or 100.0)
+    if pct <= 0:
+        return 1.0
+    return max(0.05, min(pct, 100.0)) / 100.0
+
+
 def _trade_friction_args(payload: dict):
     """解析交易摩擦控制参数：最小持有天数、单次调仓换手上限。"""
     hold = max(0, min(int(payload.get("min_hold_days") or 0), 120))
@@ -1254,6 +1262,7 @@ def run_backtest(payload: dict) -> dict:
     stop_loss = max(0.0, min(float(payload.get("stop_loss_pct") or 0), 50)) / 100.0
     take_profit = max(0.0, min(float(payload.get("take_profit_pct") or 0), 200)) / 100.0
     trailing_stop = max(0.0, min(float(payload.get("trailing_stop_pct") or 0), 50)) / 100.0
+    position_cap = _position_cap(payload)
     industry_idx, industry_cap, n_industries = _industry_cap_args(payload, data)
     min_hold_days, turnover_cap = _trade_friction_args(payload)
     buy_block = sell_block = None
@@ -1273,7 +1282,7 @@ def run_backtest(payload: dict) -> dict:
         weight_override=weight_override, use_override=use_override,
         stop_loss=stop_loss, take_profit=take_profit, trailing_stop=trailing_stop,
         industry_idx=industry_idx, industry_cap=industry_cap, n_industries=n_industries,
-        min_hold_days=min_hold_days, turnover_cap=turnover_cap,
+        min_hold_days=min_hold_days, turnover_cap=turnover_cap, position_cap=position_cap,
     )
     bench = sim["benchmark"]
     benchmark_name = "股票池等权"
@@ -1417,6 +1426,7 @@ def run_backtest(payload: dict) -> dict:
             "weighting": weighting,
             "max_weight": max_weight * 100,
             "industry_cap": industry_cap * 100,
+            "max_position_pct": position_cap * 100,
             "min_hold_days": min_hold_days,
             "turnover_cap_pct": turnover_cap * 100,
             "market_timing": timing_window > 1,
@@ -1474,6 +1484,7 @@ def optimize_backtest(payload: dict) -> dict:
     stop_loss = max(0.0, min(float(payload.get("stop_loss_pct") or 0), 50)) / 100.0
     take_profit = max(0.0, min(float(payload.get("take_profit_pct") or 0), 200)) / 100.0
     trailing_stop = max(0.0, min(float(payload.get("trailing_stop_pct") or 0), 50)) / 100.0
+    position_cap = _position_cap(payload)
     industry_idx, industry_cap, n_industries = _industry_cap_args(payload, data)
     min_hold_days, turnover_cap = _trade_friction_args(payload)
     buy_block = sell_block = None
@@ -1504,7 +1515,7 @@ def optimize_backtest(payload: dict) -> dict:
                 weight_override=override, use_override=use_override,
                 stop_loss=stop_loss, take_profit=take_profit, trailing_stop=trailing_stop,
                 industry_idx=industry_idx, industry_cap=industry_cap, n_industries=n_industries,
-                min_hold_days=min_hold_days, turnover_cap=turnover_cap,
+                min_hold_days=min_hold_days, turnover_cap=turnover_cap, position_cap=position_cap,
             )
             m = sim["metrics"]
             cells.append({
@@ -1596,6 +1607,12 @@ def latest_signal(payload: dict) -> dict:
                           for name in ind_of])
         weights = weights * scale  # 超出部分留作现金
 
+    position_cap = _position_cap(payload)
+    if position_cap < 1.0:
+        total = float(weights.sum())
+        if total > position_cap:
+            weights = weights * (position_cap / total)
+
     close = data["close"]
     items = []
     for rank, j in enumerate(selected):
@@ -1621,6 +1638,7 @@ def latest_signal(payload: dict) -> dict:
             "top_n": k,
             "max_weight": max_weight * 100,
             "industry_cap": industry_cap * 100,
+            "max_position_pct": position_cap * 100,
             "benchmark": payload.get("benchmark") or "universe",
         },
     }
@@ -1777,6 +1795,7 @@ def batch_backtest(payload: dict) -> dict:
     stop_loss = max(0.0, min(float(payload.get("stop_loss_pct") or 0), 50)) / 100.0
     take_profit = max(0.0, min(float(payload.get("take_profit_pct") or 0), 200)) / 100.0
     trailing_stop = max(0.0, min(float(payload.get("trailing_stop_pct") or 0), 50)) / 100.0
+    position_cap = _position_cap(payload)
     industry_idx, industry_cap, n_industries = _industry_cap_args(payload, data)
     min_hold_days, turnover_cap = _trade_friction_args(payload)
     reb_mode, reb_weekday, reb_month_day = _rebalance_args(payload)
@@ -1813,7 +1832,7 @@ def batch_backtest(payload: dict) -> dict:
                 weight_override=override, use_override=use_override,
                 stop_loss=stop_loss, take_profit=take_profit, trailing_stop=trailing_stop,
                 industry_idx=industry_idx, industry_cap=industry_cap, n_industries=n_industries,
-                min_hold_days=min_hold_days, turnover_cap=turnover_cap,
+                min_hold_days=min_hold_days, turnover_cap=turnover_cap, position_cap=position_cap,
             )
             stats = analysis.quick_ic(score, data["close"], valid, 5)
         except Exception:
@@ -1876,6 +1895,7 @@ def cost_sensitivity(payload: dict) -> dict:
     stop_loss = max(0.0, min(float(payload.get("stop_loss_pct") or 0), 50)) / 100.0
     take_profit = max(0.0, min(float(payload.get("take_profit_pct") or 0), 200)) / 100.0
     trailing_stop = max(0.0, min(float(payload.get("trailing_stop_pct") or 0), 50)) / 100.0
+    position_cap = _position_cap(payload)
     industry_idx, industry_cap, n_industries = _industry_cap_args(payload, data)
 
     levels = [0, 5, 10, 15, 20, 30]
@@ -1889,7 +1909,7 @@ def cost_sensitivity(payload: dict) -> dict:
             buy_block=buy_block, sell_block=sell_block, constraints=trade_constraints,
             stop_loss=stop_loss, take_profit=take_profit, trailing_stop=trailing_stop,
             industry_idx=industry_idx, industry_cap=industry_cap, n_industries=n_industries,
-            min_hold_days=min_hold_days, turnover_cap=turnover_cap,
+            min_hold_days=min_hold_days, turnover_cap=turnover_cap, position_cap=position_cap,
         )
         m = sim["metrics"]
         items.append({

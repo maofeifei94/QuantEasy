@@ -1121,6 +1121,7 @@
       weighting: $("#btWeighting").value,
       max_weight: Number($("#btMaxWeight").value) || 0,
       industry_cap: Number($("#btIndustryCap").value) || 0,
+      max_position_pct: Number($("#btMaxPosition").value) || 100,
       min_hold_days: Number($("#btMinHold").value) || 0,
       turnover_cap_pct: Number($("#btTurnoverCap").value) || 0,
       market_timing: $("#btTiming").value !== "none",
@@ -1360,6 +1361,7 @@
     setVal("#btWeighting", cfg.weighting);
     setVal("#btMaxWeight", cfg.max_weight);
     setVal("#btIndustryCap", cfg.industry_cap || 0);
+    setVal("#btMaxPosition", cfg.max_position_pct || 100);
     setVal("#btMinHold", cfg.min_hold_days || 0);
     setVal("#btTurnoverCap", cfg.turnover_cap_pct || 0);
     setVal("#btBenchmark", cfg.benchmark);
@@ -1591,6 +1593,7 @@
               <span class="chip">佣金 ${fmtNum(cfg.commission_bps, 1)} / 印花 ${fmtNum(cfg.stamp_duty_bps || 0, 1)} / 滑点 ${fmtNum(cfg.slippage_bps || 0, 1)} bps</span>
               <span class="chip">${weightLabel}${cfg.max_weight > 0 ? " · 上限 " + cfg.max_weight + "%" : ""}</span>
               ${cfg.industry_cap > 0 ? `<span class="chip">行业上限 ${fmtNum(cfg.industry_cap, 0)}%</span>` : ""}
+              ${cfg.max_position_pct && cfg.max_position_pct < 100 ? `<span class="chip amber">最大仓位 ${fmtNum(cfg.max_position_pct, 0)}%</span>` : ""}
               ${cfg.min_hold_days > 0 ? `<span class="chip">最小持有 ${cfg.min_hold_days} 天</span>` : ""}
               ${cfg.turnover_cap_pct > 0 ? `<span class="chip">换手上限 ${fmtNum(cfg.turnover_cap_pct, 0)}%</span>` : ""}
               ${cfg.long_short ? `<span class="chip amber">多空</span>` : ""}
