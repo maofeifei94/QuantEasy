@@ -1343,6 +1343,8 @@
         standardize: $("#ppStd").checked,
         orthogonalize: $("#ppOrtho").checked,
       },
+      factor_timing: $("#btFactorTiming").checked,
+      timing_lookback: Number($("#btTimingLookback").value) || 60,
       filters: {
         exclude_star: $("#filterStar").checked,
         exclude_bj: $("#filterBJ").checked,
@@ -1601,6 +1603,8 @@
     setVal("#btMaxPosition", cfg.max_position_pct || 100);
     setVal("#btVolTarget", cfg.vol_target_pct || 0);
     setVal("#btVolLookback", cfg.vol_lookback || 20);
+    $("#btFactorTiming").checked = !!cfg.factor_timing;
+    setVal("#btTimingLookback", cfg.timing_lookback || 60);
     setVal("#btMinHold", cfg.min_hold_days || 0);
     setVal("#btTurnoverCap", cfg.turnover_cap_pct || 0);
     setVal("#btRebalanceBand", cfg.rebalance_band_pct || 0);
@@ -2031,6 +2035,7 @@
               ${cfg.min_hold_days > 0 ? `<span class="chip">最小持有 ${cfg.min_hold_days} 天</span>` : ""}
               ${cfg.turnover_cap_pct > 0 ? `<span class="chip">换手上限 ${fmtNum(cfg.turnover_cap_pct, 0)}%</span>` : ""}
               ${cfg.rebalance_band_pct > 0 ? `<span class="chip">缓冲带 ${fmtNum(cfg.rebalance_band_pct, 1)}%</span>` : ""}
+              ${cfg.factor_timing ? `<span class="chip amber">因子择时 ${cfg.timing_lookback || 60} 日</span>` : ""}
               ${cfg.long_short ? `<span class="chip amber">多空</span>` : ""}
               ${cfg.market_timing ? `<span class="chip amber">MA${cfg.timing_window || 20} 择时</span>` : ""}
               ${cfg.oos_split > 0 ? `<span class="chip">样本外 ${Math.round(cfg.oos_split * 100)}%</span>` : ""}

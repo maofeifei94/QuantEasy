@@ -262,6 +262,44 @@ def _factor_components(data: dict, specs: list[dict], options: dict) -> list[np.
     return components
 
 
+def _rolling_nan_stats(x: np.ndarray, n: int) -> tuple[np.ndarray, np.ndarray]:
+    """滚动均值/标准差（忽略 NaN）。"""
+    mean = np.full_like(x, np.nan)
+    std = np.full_like(x, np.nan)
+    for t in range(len(x)):
+        seg = x[max(0, t - n + 1):t + 1]
+        seg = seg[np.isfinite(seg)]
+        if seg.size >= 2:
+            mean[t] = float(seg.mean())
+            std[t] = float(seg.std(ddof=1))
+    return mean, std
+
+
+def _factor_timing_weights(components: list[np.ndarray], close: np.ndarray,
+                           horizon: int = 5, lookback: int = 60) -> np.ndarray:
+    """滚动 ICIR 因子择时权重，仅使用已实现信息，返回 (T, K) 权重面板。"""
+    T, K = close.shape[0], len(components)
+    fwd = np.full_like(close, np.nan)
+    h = max(1, min(int(horizon), 60))
+    if T > h:
+        with np.errstate(divide="ignore", invalid="ignore"):
+            fwd[:-h] = close[h:] / close[:-h] - 1.0
+    ic = np.full((T, K), np.nan)
+    for i, comp in enumerate(components):
+        ic[:, i] = analysis.daily_ic(comp, fwd)
+    # IC 需要 h 天后收益才能观测到，整体后移 h 天避免未来信息
+    shifted = np.full_like(ic, np.nan)
+    if T > h:
+        shifted[h:] = ic[:-h]
+    weights = np.full((T, K), 1.0 / K)
+    for i in range(K):
+        mean, std = _rolling_nan_stats(shifted[:, i], max(10, lookback))
+        icir = np.where(std > 1e-9, mean / std * np.sqrt(252.0 / h), 0.0)
+        weights[:, i] = np.maximum(icir, 0.0)
+    total = weights.sum(axis=1, keepdims=True)
+    return np.where(total > 1e-9, weights / np.maximum(total, 1e-12), 1.0 / K)
+
+
 def _prepare(payload: dict):
     codes = payload.get("codes") or None
     if isinstance(codes, str):
@@ -277,10 +315,20 @@ def _prepare(payload: dict):
     multi = len(specs) > 1
 
     components = _factor_components(data, specs, options)
+    timing_on = bool(payload.get("factor_timing")) and multi
+    timing_lookback = max(10, min(int(payload.get("timing_lookback") or 60), 250))
+    timing_horizon = max(1, min(int(payload.get("timing_horizon") or 5), 60))
+    timing_weights = None
 
     if multi:
         stack = np.stack(components)
-        weights = np.asarray([s["weight"] for s in specs]).reshape(-1, 1, 1)
+        if timing_on:
+            timing_weights = _factor_timing_weights(
+                components, data["close"], timing_horizon, timing_lookback
+            )
+            weights = timing_weights.T[:, :, None]
+        else:
+            weights = np.asarray([s["weight"] for s in specs]).reshape(-1, 1, 1)
         numerator = np.nansum(stack * weights, axis=0)
         denominator = np.nansum(np.where(np.isfinite(stack), np.abs(weights), 0.0), axis=0)
         score = np.where(denominator > 1e-12, numerator / np.maximum(denominator, 1e-12), np.nan)
@@ -307,6 +355,13 @@ def _prepare(payload: dict):
             "standardize": bool(options.get("standardize")) or multi,
             "orthogonalize": bool(options.get("orthogonalize")),
         },
+        "timing": {
+            "enabled": timing_on,
+            "lookback": timing_lookback,
+            "horizon": timing_horizon,
+            "avg_weights": [round(float(v), 4) for v in timing_weights.mean(axis=0)]
+            if timing_weights is not None else [],
+        } if timing_on else None,
     }
     return data, factor, score
 
@@ -1641,6 +1696,7 @@ def run_backtest(payload: dict) -> dict:
             "direction": factor["direction"],
             "factors": factor["factors"],
             "preprocess": factor["preprocess"],
+            "timing": factor.get("timing"),
             "ic": analysis_res["ic"],
             "ic_by_year": analysis_res["ic_by_year"],
             "ic_decay": analysis_res["ic_decay"],
@@ -1680,6 +1736,8 @@ def run_backtest(payload: dict) -> dict:
             "vol_target_pct": vol_target * 100,
             "vol_lookback": vol_lookback,
             "rebalance_band_pct": rebalance_band * 100,
+            "factor_timing": bool(factor.get("timing")),
+            "timing_lookback": (factor.get("timing") or {}).get("lookback", 0),
             "min_hold_days": min_hold_days,
             "turnover_cap_pct": turnover_cap * 100,
             "market_timing": timing_window > 1,

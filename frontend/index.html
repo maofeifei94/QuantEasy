@@ -294,6 +294,16 @@
               <button class="btn sm" id="factorSelectBtn" title="按 ICIR 与相关性筛选低冗余因子">因子筛选</button>
               <button class="btn sm" id="saveComboFactorBtn" title="将当前加权组合保存为可复用因子">另存为因子</button>
             </div>
+            <div class="form-row" style="margin-top:8px;gap:10px;align-items:center">
+              <label class="switch" title="按滚动 ICIR 动态调整因子权重（仅多因子）">
+                <input type="checkbox" id="btFactorTiming">
+                <span class="track"></span>
+                <span>因子择时</span>
+              </label>
+              <span class="hint">滚动 ICIR 窗口</span>
+              <input type="number" id="btTimingLookback" value="60" min="10" max="250" step="10" style="width:76px">
+              <span class="hint">交易日（5 日 IC，滞后一期防未来函数）</span>
+            </div>
           </div>
           <div class="field" style="margin-top:12px">
             <label>因子预处理</label>
