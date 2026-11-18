@@ -132,7 +132,7 @@ def _vol_target_scale(close: jnp.ndarray, target: jnp.ndarray,
     "top_n", "long_short", "weighting", "max_weight", "constraints",
     "use_override", "stop_loss", "take_profit", "trailing_stop",
     "industry_cap", "n_industries", "min_hold", "turnover_cap", "position_cap",
-    "vol_target", "vol_lookback", "rebalance_band",
+    "vol_target", "vol_lookback", "rebalance_band", "weight_drift",
 ))
 def _simulate(
     score: jnp.ndarray,
@@ -166,6 +166,7 @@ def _simulate(
     vol_target: float,
     vol_lookback: int,
     rebalance_band: float,
+    weight_drift: bool,
 ):
     T, N = score.shape
     if use_override:
@@ -189,7 +190,7 @@ def _simulate(
 
     def fill(state, inputs):
         w_prev, entry, age, peak = state
-        tgt, rb, bb, sb, px = inputs
+        tgt, rb, bb, sb, px, rt = inputs
         if use_stop:
             held = w_prev > 1e-9
             peak_upd = jnp.where(held, jnp.maximum(peak, px), 0.0)
@@ -261,22 +262,39 @@ def _simulate(
             new_entry = entry
         new_age = jnp.where(jnp.abs(desired) > 1e-9, age + 1.0, 0.0)
         new_peak = jnp.where(jnp.abs(desired) > 1e-9, peak_stop, 0.0)
-        return (desired, new_entry, new_age, new_peak), desired
+
+        if weight_drift:
+            # 持仓权重随价格自然漂移，而非每日强制回到目标权重
+            port_ret = jnp.sum(desired * rt)
+            growth = desired * (1.0 + rt)
+            denom = jnp.maximum(1.0 + port_ret, 0.05)
+            new_w = jnp.where(
+                (jnp.abs(desired) > 1e-12) & (jnp.abs(1.0 + port_ret) > 1e-9),
+                growth / denom,
+                0.0,
+            )
+        else:
+            new_w = desired
+        return (new_w, new_entry, new_age, new_peak), desired
+
+    prev_c = close[:-1]
+    rets = close[1:] / prev_c - 1.0
+    rets = jnp.nan_to_num(rets, nan=0.0, posinf=0.0, neginf=0.0)
+    rets = jnp.clip(rets, -0.25, 0.25)
+    # 第 t 日权重赚取的是 t→t+1 的收益，因此漂移使用左移一日的收益率
+    rets_full = jnp.concatenate([rets, jnp.zeros((1, N), dtype=rets.dtype)], axis=0)
 
     _, W = jax.lax.scan(
         fill, (jnp.zeros(N), jnp.zeros(N), jnp.zeros(N), jnp.zeros(N)),
-        (target, rebalance, buy_block, sell_block, close),
+        (target, rebalance, buy_block, sell_block, close, rets_full),
     )
 
-    prev_c, next_c = close[:-1], close[1:]
-    rets = next_c / prev_c - 1.0
-    rets = jnp.nan_to_num(rets, nan=0.0, posinf=0.0, neginf=0.0)
-    rets = jnp.clip(rets, -0.25, 0.25)
-
     gross = jnp.sum(W[:-1] * rets, axis=1)
-    dw = jnp.sum(jnp.abs(W[1:] - W[:-1]), axis=1)
+    # 仅调仓日产生交易；非调仓日的权重变化来自价格漂移，不计换手与成本
+    trade_mask = jnp.asarray(rebalance[1:], dtype=bool)[:, None]
+    delta = jnp.where(trade_mask, W[1:] - W[:-1], 0.0)
+    dw = jnp.sum(jnp.abs(delta), axis=1)
     # A 股成本模型：买入=佣金+滑点；卖出=佣金+印花税+滑点
-    delta = W[1:] - W[:-1]
     buys = jnp.sum(jnp.maximum(delta, 0.0), axis=1)
     sells = jnp.sum(jnp.maximum(-delta, 0.0), axis=1)
     trade_cost = (commission + slippage) * buys + (commission + stamp_duty + slippage) * sells
@@ -355,6 +373,7 @@ def run_backtest(
     vol_target: float = 0.0,
     vol_lookback: int = 20,
     rebalance_band: float = 0.0,
+    weight_drift: bool = True,
 ) -> dict[str, Any]:
     score_j = jnp.asarray(score, dtype=jnp.float64)
     close_j = jnp.asarray(close, dtype=jnp.float64)
@@ -382,6 +401,7 @@ def run_backtest(
         ind_j, float(industry_cap), int(n_industries),
         int(min_hold_days), float(turnover_cap), float(position_cap),
         float(vol_target), int(vol_lookback), float(rebalance_band),
+        bool(weight_drift),
     )
     m = _metrics(net, nav, dw)
 

@@ -1603,6 +1603,7 @@ def run_backtest(payload: dict) -> dict:
     min_hold_days, turnover_cap = _trade_friction_args(payload)
     vol_target, vol_lookback = _vol_target_args(payload)
     rebalance_band = _rebalance_band(payload)
+    weight_drift = bool(payload.get("weight_drift", True))
     buy_block = sell_block = None
     if trade_constraints:
         rets = data["returns"]
@@ -1622,6 +1623,7 @@ def run_backtest(payload: dict) -> dict:
         industry_idx=industry_idx, industry_cap=industry_cap, n_industries=n_industries,
         min_hold_days=min_hold_days, turnover_cap=turnover_cap, position_cap=position_cap,
         vol_target=vol_target, vol_lookback=vol_lookback, rebalance_band=rebalance_band,
+        weight_drift=weight_drift,
     )
     bench = sim["benchmark"]
     benchmark_name = "股票池等权"
@@ -1772,6 +1774,7 @@ def run_backtest(payload: dict) -> dict:
             "rebalance_band_pct": rebalance_band * 100,
             "industry_neutral": ind_neutral,
             "industry_neutral_n": ind_neutral_n,
+            "weight_drift": weight_drift,
             "factor_timing": bool(factor.get("timing")),
             "timing_lookback": (factor.get("timing") or {}).get("lookback", 0),
             "min_hold_days": min_hold_days,
@@ -1835,6 +1838,7 @@ def optimize_backtest(payload: dict) -> dict:
     industry_idx, industry_cap, n_industries = _industry_cap_args(payload, data)
     min_hold_days, turnover_cap = _trade_friction_args(payload)
     rebalance_band = _rebalance_band(payload)
+    weight_drift = bool(payload.get("weight_drift", True))
     buy_block = sell_block = None
     if trade_constraints:
         rets = data["returns"]
@@ -1865,6 +1869,7 @@ def optimize_backtest(payload: dict) -> dict:
                 industry_idx=industry_idx, industry_cap=industry_cap, n_industries=n_industries,
                 min_hold_days=min_hold_days, turnover_cap=turnover_cap, position_cap=position_cap,
                 rebalance_band=rebalance_band,
+                weight_drift=weight_drift,
             )
             m = sim["metrics"]
             cells.append({
@@ -2372,6 +2377,7 @@ def batch_backtest(payload: dict) -> dict:
                 industry_idx=industry_idx, industry_cap=industry_cap, n_industries=n_industries,
                 min_hold_days=min_hold_days, turnover_cap=turnover_cap, position_cap=position_cap,
                 rebalance_band=rebalance_band,
+                weight_drift=weight_drift,
             )
             stats = analysis.quick_ic(score, data["close"], valid, 5)
         except Exception:
@@ -2454,6 +2460,7 @@ def optimize_factor_weights(payload: dict) -> dict:
     min_hold_days, turnover_cap = _trade_friction_args(payload)
     vol_target, vol_lookback = _vol_target_args(payload)
     rebalance_band = _rebalance_band(payload)
+    weight_drift = bool(payload.get("weight_drift", True))
 
     k = len(specs)
     evaluations = {"n": 0}
@@ -2476,6 +2483,7 @@ def optimize_factor_weights(payload: dict) -> dict:
             industry_idx=industry_idx, industry_cap=industry_cap, n_industries=n_industries,
             min_hold_days=min_hold_days, turnover_cap=turnover_cap, position_cap=position_cap,
             vol_target=vol_target, vol_lookback=vol_lookback, rebalance_band=rebalance_band,
+            weight_drift=weight_drift,
         )
         evaluations["n"] += 1
         return float(sim["metrics"][metric]), sim["metrics"]
@@ -2565,6 +2573,7 @@ def cost_sensitivity(payload: dict) -> dict:
     industry_idx, industry_cap, n_industries = _industry_cap_args(payload, data)
     min_hold_days, turnover_cap = _trade_friction_args(payload)
     rebalance_band = _rebalance_band(payload)
+    weight_drift = bool(payload.get("weight_drift", True))
 
     levels = [0, 5, 10, 15, 20, 30]
     items = []
@@ -2579,6 +2588,7 @@ def cost_sensitivity(payload: dict) -> dict:
             industry_idx=industry_idx, industry_cap=industry_cap, n_industries=n_industries,
             min_hold_days=min_hold_days, turnover_cap=turnover_cap, position_cap=position_cap,
             rebalance_band=rebalance_band,
+            weight_drift=weight_drift,
         )
         m = sim["metrics"]
         items.append({
@@ -2629,6 +2639,7 @@ def walk_forward(payload: dict) -> dict:
     position_cap = _position_cap(payload)
     min_hold_days, turnover_cap = _trade_friction_args(payload)
     rebalance_band = _rebalance_band(payload)
+    weight_drift = bool(payload.get("weight_drift", True))
     stop_loss = max(0.0, min(float(payload.get("stop_loss_pct") or 0), 50)) / 100.0
     take_profit = max(0.0, min(float(payload.get("take_profit_pct") or 0), 200)) / 100.0
     trailing_stop = max(0.0, min(float(payload.get("trailing_stop_pct") or 0), 50)) / 100.0
@@ -2661,6 +2672,7 @@ def walk_forward(payload: dict) -> dict:
             industry_idx=industry_idx, industry_cap=industry_cap, n_industries=n_industries,
             min_hold_days=min_hold_days, turnover_cap=turnover_cap, position_cap=position_cap,
             rebalance_band=rebalance_band,
+            weight_drift=weight_drift,
         )
 
     fold_rows, stitched, stitched_dates = [], [], []
