@@ -240,6 +240,14 @@ def screener(payload: dict = Body(...)) -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/api/screener/history")
+def screener_history(payload: dict = Body(...)) -> dict:
+    try:
+        return services.screen_history(payload)
+    except (FactorError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/api/portfolio/combine")
 def combine_portfolios(payload: dict = Body(...)) -> dict:
     try:

@@ -2459,6 +2459,113 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
     }
   }
 
+  function openScreenerHistory() {
+    openModal(`
+      <div class="modal-head">
+        <div><h3>选股规则历史检验</h3>
+          <div class="panel-sub" style="margin-top:3px">每月末按当前选股条件建仓，统计未来 N 日等权收益与相对全市场超额</div></div>
+        <button class="icon-btn" data-close>✕</button>
+      </div>
+      <div class="form-row" style="gap:14px;align-items:flex-end">
+        <div class="field"><label>持有期</label>
+          <select id="scrHistHorizon">
+            <option value="5">5 个交易日</option>
+            <option value="10">10 个交易日</option>
+            <option value="20" selected>20 个交易日</option>
+            <option value="60">60 个交易日</option>
+          </select>
+        </div>
+        <div class="field"><label>回看月数</label>
+          <select id="scrHistMonths">
+            <option value="12">12 个月</option>
+            <option value="24" selected>24 个月</option>
+            <option value="36">36 个月</option>
+          </select>
+        </div>
+        <button class="btn primary" id="scrHistRun">开始检验</button>
+      </div>
+      <div id="scrHistBody" style="margin-top:14px">
+        <div class="hint-box">将使用智能选股页当前的选股条件、行业过滤与返回数量设置，逐月回溯计算。</div>
+      </div>`, true);
+    $("#scrHistRun").addEventListener("click", runScreenerHistory);
+  }
+
+  async function runScreenerHistory() {
+    const btn = $("#scrHistRun");
+    const box = $("#scrHistBody");
+    btn.disabled = true;
+    btn.innerHTML = `<span class="spinner"></span> 计算中`;
+    box.innerHTML = `<div class="empty" style="border:none"><p>正在逐月回溯选股条件…</p></div>`;
+    try {
+      const payload = {
+        limit: Number($("#scrLimit").value) || 50,
+        filters: {
+          exclude_star: $("#scrStar").checked,
+          exclude_bj: $("#scrBJ").checked,
+          min_amount: (Number($("#scrAmount").value) || 0) * 10000,
+          industries: Array.from($("#scrIndustries").selectedOptions).map((o) => o.value),
+        },
+        conditions: state.screenerConds.map((c) => ({
+          factor_id: c.factorId, mode: c.mode, value: c.value,
+          scope: c.scope || "all", weight: c.weight == null ? 1 : c.weight,
+        })),
+        logic: $("#scrLogic").value,
+        horizon: Number($("#scrHistHorizon").value) || 20,
+        months: Number($("#scrHistMonths").value) || 24,
+      };
+      const res = await api("/api/screener/history", { method: "POST", body: payload });
+      renderScreenerHistory(res);
+    } catch (e) {
+      box.innerHTML = `<div class="hint-box"><span class="down">${esc(e.message)}</span></div>`;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "开始检验";
+    }
+  }
+
+  function renderScreenerHistory(res) {
+    const s = res.summary;
+    const rows = res.rows || [];
+    const cls = (v) => (v > 0 ? "pos" : v < 0 ? "neg" : "");
+    const box = $("#scrHistBody");
+    box.innerHTML = `
+      <div class="metric-cards">
+        <div class="mcard"><div class="k">平均收益</div><div class="v ${cls(s.avg_ret)}">${fmtPct(s.avg_ret, 1)}</div><div class="s">每期未来 ${s.horizon} 日等权</div></div>
+        <div class="mcard"><div class="k">平均超额</div><div class="v ${cls(s.avg_excess)}">${fmtPct(s.avg_excess, 1)}</div><div class="s">相对全市场等权</div></div>
+        <div class="mcard"><div class="k">跑赢概率</div><div class="v">${fmtPct(s.excess_win_rate, 0, false)}</div><div class="s">${s.periods} 期样本</div></div>
+        <div class="mcard"><div class="k">平均入选</div><div class="v">${fmtNum(s.avg_count, 0)}</div><div class="s">只 / 期</div></div>
+      </div>
+      <div class="factor-meta" style="margin-top:10px">
+        <span class="chip">累计收益 ${fmtPct(s.cum_ret, 1)}</span>
+        <span class="chip">基准累计 ${fmtPct(s.cum_bench, 1)}</span>
+        <span class="chip ${s.best_excess >= 0 ? "green" : "amber"}">单期最佳 ${fmtPct(s.best_excess, 1)}</span>
+        <span class="chip ${s.worst_excess <= 0 ? "amber" : "green"}">单期最差 ${fmtPct(s.worst_excess, 1)}</span>
+      </div>
+      <div class="chart-wrap" style="margin-top:12px"><canvas id="scrHistChart"></canvas></div>
+      <div class="table-wrap" style="margin-top:12px;max-height:250px;overflow:auto">
+        <table>
+          <thead><tr><th>日期</th><th style="text-align:right">入选数</th><th style="text-align:right">组合收益</th>
+            <th style="text-align:right">全市场</th><th style="text-align:right">超额</th></tr></thead>
+          <tbody>${rows.map((r) => `<tr>
+            <td class="num-mono">${esc(r.date)}</td>
+            <td style="text-align:right" class="num-mono">${r.count}</td>
+            <td style="text-align:right" class="num-mono ${cls(r.ret)}">${r.ret == null ? "—" : fmtPct(r.ret, 1)}</td>
+            <td style="text-align:right" class="num-mono">${r.bench == null ? "—" : fmtPct(r.bench, 1)}</td>
+            <td style="text-align:right" class="num-mono ${cls(r.excess)}">${r.excess == null ? "—" : fmtPct(r.excess, 1)}</td>
+          </tr>`).join("")}</tbody>
+        </table>
+      </div>`;
+    Charts.line($("#scrHistChart"), {
+      labels: rows.map((r) => r.date),
+      height: 250,
+      series: [
+        { name: "选股组合", data: rows.map((r) => r.nav), color: "#3ddc97", fill: true },
+        { name: "全市场等权", data: rows.map((r) => r.bench_nav), color: "#5b8def" },
+      ],
+      yFmt: (v) => v.toFixed(2),
+    });
+  }
+
   function renderScreenerResult(res) {
     const labels = res.labels || [];
     const indCount = {};
@@ -2871,6 +2978,7 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
     $("#runBacktestBtn").addEventListener("click", runBacktest);
     $("#btRebalanceMode").addEventListener("change", updateRebalanceUI);
     $("#scrRun").addEventListener("click", runScreener);
+    $("#scrHistory").addEventListener("click", openScreenerHistory);
     $("#scrAdd").addEventListener("click", () => {
       if (state.screenerConds.length >= 6) { toast("最多支持 6 个条件", true); return; }
       state.screenerConds.push({ factorId: state.factors[0]?.id || "", mode: "rank_top", value: 20, weight: 1 });

@@ -1653,20 +1653,12 @@ def latest_signal(payload: dict) -> dict:
     }
 
 
-def screen_stocks(payload: dict) -> dict:
-    """多条件选股：按交易日对因子做排名/阈值过滤，条件支持 AND / OR 组合。"""
-    codes = payload.get("codes") or None
-    data = panel.build_panel(codes, payload.get("start") or None, payload.get("end") or None)
-    valid = _apply_filters(data, payload.get("filters"))
-    conds = payload.get("conditions") or []
+def _screen_specs(data: dict, conds: list, max_conds: int = 6) -> list[dict]:
+    """把选股条件解析为 (因子面板, 模式, 阈值, 范围, 权重) 规格。"""
     if not conds:
         raise ValueError("请至少添加一个选股条件")
-    if len(conds) > 6:
-        raise ValueError("最多支持 6 个选股条件")
-    logic = payload.get("logic") or "and"
-    if logic not in ("and", "or"):
-        logic = "and"
-
+    if len(conds) > max_conds:
+        raise ValueError(f"最多支持 {max_conds} 个选股条件")
     specs = []
     for c in conds:
         if not isinstance(c, dict):
@@ -1690,33 +1682,26 @@ def screen_stocks(payload: dict) -> dict:
         weight = max(-5.0, min(weight, 5.0))
         specs.append({"spec": spec, "raw": raw, "mode": mode, "value": value,
                       "scope": scope, "weight": weight})
+    return specs
 
-    base_counts = (np.isfinite(specs[0]["raw"]) & valid).sum(axis=1)
-    date = payload.get("date")
-    if date:
-        if date not in data["dates"]:
-            raise ValueError("所选日期不在数据范围内")
-        t = data["dates"].index(date)
-        if base_counts[t] < 2:
-            raise ValueError("所选日期有效数据不足")
-    else:
-        cand = np.where(base_counts >= max(2, min(10, len(data["codes"]))))[0]
-        if cand.size == 0:
-            raise ValueError("没有足够的有效数据")
-        t = int(cand[-1])
 
+def _screen_selection(data: dict, specs: list[dict], valid: np.ndarray,
+                      t: int, logic: str) -> dict:
+    """在交易日 t 上执行全部条件，返回命中掩码、综合分与条件明细。"""
     N = len(data["codes"])
     valid_t = valid[t]
     mask = valid_t.copy()
     passes: list[np.ndarray] = []
     rows: list[np.ndarray] = []
     zs: list[np.ndarray] = []
-    cond_detail = []
+    detail: list[dict] = []
     for item in specs:
         row = item["raw"][t]
         base = (valid_t if logic == "or" else mask) & np.isfinite(row)
         if not base.any():
-            raise ValueError(f"条件「{item['spec']['label']}」在所选日期没有有效值")
+            return {"mask": np.zeros(N, dtype=bool), "score": np.zeros(N),
+                    "rows": rows, "cond_detail": detail,
+                    "failed": item["spec"]["label"]}
         mode, value = item["mode"], item["value"]
         if mode in ("rank_top", "rank_bottom"):
             pct = max(0.1, min(value, 100.0))
@@ -1743,7 +1728,7 @@ def screen_stocks(payload: dict) -> dict:
         prefer_high = mode in ("rank_top", "gte")
         zs.append((z if prefer_high else -np.asarray(z)) * item["weight"])
         rows.append(row)
-        cond_detail.append({
+        detail.append({
             "label": item["spec"]["label"],
             "mode": mode,
             "value": value,
@@ -1753,16 +1738,52 @@ def screen_stocks(payload: dict) -> dict:
         passes.append(passed)
         if logic == "and":
             mask = passed
-
     if logic == "or":
         mask = np.zeros(N, dtype=bool)
         for p in passes:
             mask |= p
+    idxs = np.where(mask)[0]
+    score = np.nansum(np.stack(zs), axis=0) if idxs.size else np.zeros(N)
+    return {"mask": mask, "score": score, "rows": rows,
+            "cond_detail": detail, "failed": None}
+
+
+def screen_stocks(payload: dict) -> dict:
+    """多条件选股：按交易日对因子做排名/阈值过滤，条件支持 AND / OR 组合。"""
+    codes = payload.get("codes") or None
+    data = panel.build_panel(codes, payload.get("start") or None, payload.get("end") or None)
+    valid = _apply_filters(data, payload.get("filters"))
+    logic = payload.get("logic") or "and"
+    if logic not in ("and", "or"):
+        logic = "and"
+    specs = _screen_specs(data, payload.get("conditions") or [])
+
+    base_counts = (np.isfinite(specs[0]["raw"]) & valid).sum(axis=1)
+    date = payload.get("date")
+    if date:
+        if date not in data["dates"]:
+            raise ValueError("所选日期不在数据范围内")
+        t = data["dates"].index(date)
+        if base_counts[t] < 2:
+            raise ValueError("所选日期有效数据不足")
+    else:
+        cand = np.where(base_counts >= max(2, min(10, len(data["codes"]))))[0]
+        if cand.size == 0:
+            raise ValueError("没有足够的有效数据")
+        t = int(cand[-1])
+
+    N = len(data["codes"])
+    picked = _screen_selection(data, specs, valid, t, logic)
+    if picked["failed"]:
+        raise ValueError(f"条件「{picked['failed']}」在所选日期没有有效值")
+    mask = picked["mask"]
+    rows = picked["rows"]
+    score = picked["score"]
+    cond_detail = picked["cond_detail"]
 
     idxs = np.where(mask)[0]
     close = data["close"]
     prev_close = close[t - 1] if t > 0 else np.full(N, np.nan)
-    score = np.nansum(np.stack(zs), axis=0) if idxs.size else np.zeros(N)
     sort_by = str(payload.get("sort_by") or "score")
     order = idxs[np.argsort(-score[idxs])] if idxs.size else np.array([], dtype=int)
     if sort_by.startswith("c") and sort_by[1:].isdigit():
@@ -1800,10 +1821,86 @@ def screen_stocks(payload: dict) -> dict:
         "sort_by": sort_by,
         "count": int(mask.sum()),
         "returned": len(items),
-        "universe_size": int(valid_t.sum()),
+        "universe_size": int(valid[t].sum()),
         "conditions": cond_detail,
         "labels": [item["spec"]["label"] for item in specs],
         "items": items,
+    }
+
+
+def screen_history(payload: dict) -> dict:
+    """选股规则历史检验：每月末按当前条件选股，统计未来 N 日等权收益与超额。"""
+    codes = payload.get("codes") or None
+    data = panel.build_panel(codes, payload.get("start") or None, payload.get("end") or None)
+    valid = _apply_filters(data, payload.get("filters"))
+    logic = payload.get("logic") or "and"
+    if logic not in ("and", "or"):
+        logic = "and"
+    specs = _screen_specs(data, payload.get("conditions") or [])
+    horizon = max(2, min(int(payload.get("horizon") or 20), 120))
+    months = max(3, min(int(payload.get("months") or 24), 60))
+    limit = max(1, min(int(payload.get("limit") or 50), 200))
+
+    dates = data["dates"]
+    close = data["close"]
+    T = len(dates)
+    snaps = [i - 1 for i in range(1, T) if dates[i][:7] != dates[i - 1][:7]]
+    snaps = [i for i in snaps if i + horizon < T]
+    snaps = snaps[-months:]
+    if len(snaps) < 2:
+        raise ValueError("数据跨度不足，无法进行历史检验")
+
+    rows = []
+    nav = bench_nav = 1.0
+    for t in snaps:
+        picked = _screen_selection(data, specs, valid, t, logic)
+        idxs = np.where(picked["mask"])[0]
+        order = idxs[np.argsort(-picked["score"][idxs])][:limit] if idxs.size else idxs
+        fwd = close[t + horizon] / close[t] - 1.0
+        universe = valid[t] & np.isfinite(fwd)
+        bench = float(fwd[universe].mean()) if universe.any() else np.nan
+        rets = fwd[order]
+        rets = rets[np.isfinite(rets)]
+        avg = float(rets.mean()) if rets.size else np.nan
+        if np.isfinite(avg):
+            nav *= 1.0 + avg
+        if np.isfinite(bench):
+            bench_nav *= 1.0 + bench
+        rows.append({
+            "date": dates[t],
+            "count": int(order.size),
+            "ret": round(avg, 4) if np.isfinite(avg) else None,
+            "bench": round(bench, 4) if np.isfinite(bench) else None,
+            "excess": round(avg - bench, 4) if (np.isfinite(avg) and np.isfinite(bench)) else None,
+            "nav": round(nav, 4),
+            "bench_nav": round(bench_nav, 4),
+        })
+
+    rets = [r["ret"] for r in rows if r["ret"] is not None]
+    benches = [r["bench"] for r in rows if r["bench"] is not None]
+    excess = [r["excess"] for r in rows if r["excess"] is not None]
+    counts = [r["count"] for r in rows]
+    summary = {
+        "periods": len(rows),
+        "horizon": horizon,
+        "months": months,
+        "avg_count": round(float(np.mean(counts)), 1) if counts else 0.0,
+        "avg_ret": round(float(np.mean(rets)), 4) if rets else 0.0,
+        "avg_bench": round(float(np.mean(benches)), 4) if benches else 0.0,
+        "avg_excess": round(float(np.mean(excess)), 4) if excess else 0.0,
+        "positive_rate": round(float(np.mean([r > 0 for r in rets])), 3) if rets else 0.0,
+        "excess_win_rate": round(float(np.mean([e > 0 for e in excess])), 3) if excess else 0.0,
+        "cum_ret": round(nav - 1.0, 4),
+        "cum_bench": round(bench_nav - 1.0, 4),
+        "best_excess": round(max(excess), 4) if excess else 0.0,
+        "worst_excess": round(min(excess), 4) if excess else 0.0,
+    }
+    return {
+        "summary": summary,
+        "rows": rows,
+        "labels": [item["spec"]["label"] for item in specs],
+        "logic": logic,
+        "universe_size": int(valid[-1].sum()),
     }
 
 
