@@ -264,6 +264,16 @@ def batch_backtest(payload: dict = Body(...)) -> dict:
         raise HTTPException(status_code=500, detail=f"批量评测失败：{exc}") from exc
 
 
+@app.post("/api/backtest/cost-sensitivity")
+def cost_sensitivity(payload: dict = Body(...)) -> dict:
+    try:
+        return services.cost_sensitivity(payload)
+    except (FactorError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=f"成本敏感性失败：{exc}") from exc
+
+
 @app.post("/api/backtest")
 def backtest(payload: dict = Body(...)) -> dict:
     try:

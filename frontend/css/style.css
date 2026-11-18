@@ -359,6 +359,7 @@ thead th {
 tbody td { padding: 9px 12px; border-bottom: 1px solid var(--border-soft); white-space: nowrap; }
 tbody tr { transition: background .12s; cursor: pointer; }
 tbody tr:hover { background: rgba(61, 220, 151, .035); }
+tbody tr.best-row { background: rgba(106, 169, 255, .08); }
 td .nm { color: var(--text); }
 td .cd { font-family: var(--mono); font-size: 11px; color: var(--faint); }
 .num-mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }

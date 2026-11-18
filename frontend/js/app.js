@@ -1355,6 +1355,52 @@
     }));
   }
 
+  /* ------------------------------ 成本敏感性 ------------------------------ */
+  async function openCostSensitivity() {
+    openModal(`
+      <div class="modal-head"><div><h3>交易成本敏感性</h3><div class="panel-sub" style="margin-top:3px">不同单边综合成本下的绩效变化</div></div>
+        <button class="icon-btn" data-close>✕</button></div>
+      <div class="empty" style="border:none;padding:50px 20px">
+        <span class="spinner" style="width:22px;height:22px;margin:0 auto 12px;display:block"></span>
+        <p>正在回测不同成本档位…</p>
+      </div>`, true);
+    try {
+      const res = await api("/api/backtest/cost-sensitivity", {
+        method: "POST", body: buildCommonConfig(),
+      });
+      renderCostSensitivity(res);
+    } catch (e) {
+      closeModal();
+      toast(e.message, true);
+    }
+  }
+
+  function renderCostSensitivity(res) {
+    openModal(`
+      <div class="modal-head">
+        <div><h3>交易成本敏感性</h3>
+          <div class="panel-sub" style="margin-top:3px">${res.factor.label} · ${res.config.stocks} 只股票 · ${res.config.rebalance_days} 日调仓</div>
+        </div>
+        <button class="icon-btn" data-close>✕</button>
+      </div>
+      <div class="chart-wrap"><canvas id="costChart"></canvas></div>
+      <div class="table-wrap" style="margin-top:12px;max-height:260px">
+        <table><thead><tr><th>单边成本</th><th style="text-align:right">年化收益</th><th style="text-align:right">夏普</th><th style="text-align:right">最大回撤</th></tr></thead>
+        <tbody>${res.items.map((it) => `<tr style="cursor:default" ${it.cost_bps === Math.round(res.current_cost_bps) ? 'class="best-row"' : ""}>
+          <td class="num-mono">${it.cost_bps} bps</td>
+          <td style="text-align:right" class="num-mono ${colorClass(it.annual_return)}">${fmtPct(it.annual_return)}</td>
+          <td style="text-align:right" class="num-mono">${fmtNum(it.sharpe)}</td>
+          <td style="text-align:right" class="num-mono">${fmtPct(it.max_drawdown)}</td>
+        </tr>`).join("")}</tbody></table>
+      </div>
+      <div class="modal-foot"><span class="panel-sub">当前佣金档位 ${fmtNum(res.current_cost_bps, 1)} bps 高亮显示</span><button class="btn ghost" data-close>关闭</button></div>`, true);
+    Charts.line($("#costChart"), {
+      labels: res.items.map((it) => it.cost_bps + "bps"),
+      series: [{ name: "年化收益", data: res.items.map((it) => it.annual_return * 100), color: "#3ddc97", fill: true }],
+      height: 230, yFmt: (v) => v.toFixed(0) + "%",
+    });
+  }
+
   async function runBacktest() {
     const btn = $("#runBacktestBtn");
     if (!state.btFactors.length) { toast("请至少添加一个因子", true); return; }
@@ -1397,6 +1443,8 @@
     const benchPct = res.benchmark.map((v) => (v - 1) * 100);
     const excessPct = res.nav.map((v, i) => res.benchmark[i] ? (v / res.benchmark[i] - 1) * 100 : null);
     const ddPct = res.drawdown.map((v) => v * 100);
+    const benchAnnual = {};
+    (res.annual_returns_benchmark || []).forEach((a) => { benchAnnual[a.year] = a.return; });
 
     const perf = [
       ["年化收益", fmtPct(m.annual_return), colorClass(m.annual_return)],
@@ -1513,7 +1561,11 @@
       ${(res.annual_returns || []).length ? `<div class="panel">
         <div class="chart-title-row"><div><div class="panel-title" style="font-size:13px">年度收益</div><div class="panel-sub">按自然年统计</div></div></div>
         <div class="grid-3" style="grid-template-columns:repeat(auto-fit, minmax(120px, 1fr))">
-          ${res.annual_returns.map((a) => `<div class="perf"><div class="k">${a.year} 年</div><div class="v ${colorClass(a.return)}">${fmtPct(a.return)}</div></div>`).join("")}
+          ${res.annual_returns.map((a) => {
+            const bm = benchAnnual[a.year];
+            return `<div class="perf"><div class="k">${a.year} 年</div><div class="v ${colorClass(a.return)}">${fmtPct(a.return)}</div>
+              <div class="panel-sub" style="margin-top:2px">基准 ${bm == null ? "—" : fmtPct(bm)} · 超额 ${bm == null ? "—" : fmtPct(a.return - bm)}</div></div>`;
+          }).join("")}
         </div>
       </div>` : ""}
 
@@ -2235,6 +2287,7 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
     $("#loadConfigBtn").addEventListener("click", openLoadConfig);
     $("#runBacktestBtn").addEventListener("click", runBacktest);
     $("#batchBtn").addEventListener("click", openBatch);
+    $("#costBtn").addEventListener("click", openCostSensitivity);
     $("#optimizeBtn").addEventListener("click", runParamScan);
     $("#refreshHistory").addEventListener("click", loadHistory);
     $("#strategyCombineBtn").addEventListener("click", openStrategyCombine);

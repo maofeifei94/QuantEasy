@@ -1103,6 +1103,7 @@ def run_backtest(payload: dict) -> dict:
         "metrics": metrics,
         "monthly": monthly,
         "annual_returns": _annual_returns(dates, np.asarray(sim["nav"])),
+        "annual_returns_benchmark": _annual_returns(dates, np.asarray(bench)),
         "holdings": _holdings(dates, w, rebalance, data["names"], codes),
         "industry_exposure": _industry_exposure(w, rebalance, codes, data["industries"]),
         "attribution": attribution,
@@ -1427,6 +1428,62 @@ def batch_backtest(payload: dict) -> dict:
             "top_pct": top_frac,
             "weighting": weighting,
         },
+    }
+
+
+def cost_sensitivity(payload: dict) -> dict:
+    """交易成本敏感性：不同单边综合成本下的绩效变化。"""
+    data, factor, score = _prepare(payload)
+    valid = _apply_filters(data, payload.get("filters"))
+    freq = max(1, min(int(payload.get("rebalance_days") or 10), 120))
+    rebalance, _ = _rebalance_mask(score, valid, freq)
+    top_n = int(payload.get("top_n") or 0)
+    top_frac = float(payload.get("top_pct") or 0.2)
+    long_short = bool(payload.get("long_short") or False)
+    weighting = payload.get("weighting") or "equal"
+    if weighting not in ("equal", "score", "inverse_vol"):
+        weighting = "equal"
+    max_weight = float(payload.get("max_weight") or 0) / 100.0
+    vol = _rolling_vol(data["returns"]) if weighting == "inverse_vol" else None
+    timing_window = int(payload.get("timing_window") or 0) if payload.get("market_timing") else 0
+    timing = _market_timing(data["dates"], data["dates"][0], data["dates"][-1],
+                            timing_window) if timing_window > 1 else None
+    trade_constraints = bool(payload.get("trade_constraints"))
+    buy_block = sell_block = None
+    if trade_constraints:
+        rets = data["returns"]
+        volume = data["volume"]
+        buy_block = (rets >= 0.095) | (volume <= 0)
+        sell_block = (rets <= -0.095) | (volume <= 0)
+    stop_loss = max(0.0, min(float(payload.get("stop_loss_pct") or 0), 50)) / 100.0
+    take_profit = max(0.0, min(float(payload.get("take_profit_pct") or 0), 200)) / 100.0
+
+    levels = [0, 5, 10, 15, 20, 30]
+    items = []
+    for bps in levels:
+        sim = bt_engine.run_backtest(
+            score=score, close=data["close"], valid=valid, rebalance=rebalance,
+            top_frac=top_frac, top_n=top_n, long_short=long_short,
+            commission=bps / 10000.0, stamp_duty=0.0, slippage=0.0,
+            weighting=weighting, max_weight=max_weight, vol=vol, timing=timing,
+            buy_block=buy_block, sell_block=sell_block, constraints=trade_constraints,
+            stop_loss=stop_loss, take_profit=take_profit,
+        )
+        m = sim["metrics"]
+        items.append({
+            "cost_bps": bps,
+            "annual_return": round(m["annual_return"], 4),
+            "total_return": round(m["total_return"], 4),
+            "sharpe": round(m["sharpe"], 3),
+            "max_drawdown": round(m["max_drawdown"], 4),
+        })
+    current = float(payload.get("commission_bps") or 15)
+    return {
+        "items": items,
+        "current_cost_bps": current,
+        "factor": {"label": factor["label"]},
+        "config": {"start": data["dates"][0], "end": data["dates"][-1],
+                   "stocks": len(data["codes"]), "rebalance_days": freq},
     }
 
 
