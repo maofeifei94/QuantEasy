@@ -970,6 +970,14 @@ def _industry_exposure(weights: np.ndarray, rebalance: np.ndarray,
     return sorted(out, key=lambda x: -abs(x["last"]))
 
 
+def _industry_cap_args(payload: dict, data: dict):
+    """解析行业总权重上限参数，返回 (industry_idx, cap, n_industries)。"""
+    cap = max(0.0, min(float(payload.get("industry_cap") or 0), 100.0)) / 100.0
+    if cap <= 0 or "industry_idx" not in data:
+        return None, 0.0, 0
+    return data["industry_idx"], cap, int(data["n_industries"])
+
+
 def run_backtest(payload: dict) -> dict:
     data, factor, score = _prepare(payload)
     dates, codes = data["dates"], data["codes"]
@@ -1009,6 +1017,7 @@ def run_backtest(payload: dict) -> dict:
     trade_constraints = bool(payload.get("trade_constraints"))
     stop_loss = max(0.0, min(float(payload.get("stop_loss_pct") or 0), 50)) / 100.0
     take_profit = max(0.0, min(float(payload.get("take_profit_pct") or 0), 200)) / 100.0
+    industry_idx, industry_cap, n_industries = _industry_cap_args(payload, data)
     buy_block = sell_block = None
     if trade_constraints:
         rets = data["returns"]
@@ -1025,6 +1034,7 @@ def run_backtest(payload: dict) -> dict:
         buy_block=buy_block, sell_block=sell_block, constraints=trade_constraints,
         weight_override=weight_override, use_override=use_override,
         stop_loss=stop_loss, take_profit=take_profit,
+        industry_idx=industry_idx, industry_cap=industry_cap, n_industries=n_industries,
     )
     bench = sim["benchmark"]
     benchmark_name = "股票池等权"
@@ -1150,6 +1160,7 @@ def run_backtest(payload: dict) -> dict:
             "benchmark_name": benchmark_name,
             "weighting": weighting,
             "max_weight": max_weight * 100,
+            "industry_cap": industry_cap * 100,
             "market_timing": timing_window > 1,
             "timing_window": timing_window,
             "trade_constraints": trade_constraints,
@@ -1203,6 +1214,7 @@ def optimize_backtest(payload: dict) -> dict:
     trade_constraints = bool(payload.get("trade_constraints"))
     stop_loss = max(0.0, min(float(payload.get("stop_loss_pct") or 0), 50)) / 100.0
     take_profit = max(0.0, min(float(payload.get("take_profit_pct") or 0), 200)) / 100.0
+    industry_idx, industry_cap, n_industries = _industry_cap_args(payload, data)
     buy_block = sell_block = None
     if trade_constraints:
         rets = data["returns"]
@@ -1230,6 +1242,7 @@ def optimize_backtest(payload: dict) -> dict:
                 buy_block=buy_block, sell_block=sell_block, constraints=trade_constraints,
                 weight_override=override, use_override=use_override,
                 stop_loss=stop_loss, take_profit=take_profit,
+                industry_idx=industry_idx, industry_cap=industry_cap, n_industries=n_industries,
             )
             m = sim["metrics"]
             cells.append({
@@ -1311,6 +1324,16 @@ def latest_signal(payload: dict) -> dict:
             weights = np.minimum(weights, cap)
             weights = weights / max(weights.sum(), 1e-12)
 
+    industry_cap = max(0.0, min(float(payload.get("industry_cap") or 0), 100.0)) / 100.0
+    if industry_cap > 0:
+        ind_of = [data["industries"].get(codes[j], "未分类") for j in selected]
+        totals: dict[str, float] = {}
+        for name, w in zip(ind_of, weights):
+            totals[name] = totals.get(name, 0.0) + float(w)
+        scale = np.array([min(1.0, industry_cap / totals[name]) if totals[name] > 1e-9 else 1.0
+                          for name in ind_of])
+        weights = weights * scale  # 超出部分留作现金
+
     close = data["close"]
     items = []
     for rank, j in enumerate(selected):
@@ -1335,6 +1358,7 @@ def latest_signal(payload: dict) -> dict:
             "weighting": weighting,
             "top_n": k,
             "max_weight": max_weight * 100,
+            "industry_cap": industry_cap * 100,
             "benchmark": payload.get("benchmark") or "universe",
         },
     }
@@ -1369,6 +1393,7 @@ def batch_backtest(payload: dict) -> dict:
     trade_constraints = bool(payload.get("trade_constraints"))
     stop_loss = max(0.0, min(float(payload.get("stop_loss_pct") or 0), 50)) / 100.0
     take_profit = max(0.0, min(float(payload.get("take_profit_pct") or 0), 200)) / 100.0
+    industry_idx, industry_cap, n_industries = _industry_cap_args(payload, data)
     buy_block = sell_block = None
     if trade_constraints:
         rets = data["returns"]
@@ -1399,6 +1424,7 @@ def batch_backtest(payload: dict) -> dict:
                 buy_block=buy_block, sell_block=sell_block, constraints=trade_constraints,
                 weight_override=override, use_override=use_override,
                 stop_loss=stop_loss, take_profit=take_profit,
+                industry_idx=industry_idx, industry_cap=industry_cap, n_industries=n_industries,
             )
             stats = analysis.quick_ic(score, data["close"], valid, 5)
         except Exception:
@@ -1457,6 +1483,7 @@ def cost_sensitivity(payload: dict) -> dict:
         sell_block = (rets <= -0.095) | (volume <= 0)
     stop_loss = max(0.0, min(float(payload.get("stop_loss_pct") or 0), 50)) / 100.0
     take_profit = max(0.0, min(float(payload.get("take_profit_pct") or 0), 200)) / 100.0
+    industry_idx, industry_cap, n_industries = _industry_cap_args(payload, data)
 
     levels = [0, 5, 10, 15, 20, 30]
     items = []
@@ -1468,6 +1495,7 @@ def cost_sensitivity(payload: dict) -> dict:
             weighting=weighting, max_weight=max_weight, vol=vol, timing=timing,
             buy_block=buy_block, sell_block=sell_block, constraints=trade_constraints,
             stop_loss=stop_loss, take_profit=take_profit,
+            industry_idx=industry_idx, industry_cap=industry_cap, n_industries=n_industries,
         )
         m = sim["metrics"]
         items.append({

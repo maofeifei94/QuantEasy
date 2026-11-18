@@ -1049,6 +1049,7 @@
       benchmark: $("#btBenchmark").value,
       weighting: $("#btWeighting").value,
       max_weight: Number($("#btMaxWeight").value) || 0,
+      industry_cap: Number($("#btIndustryCap").value) || 0,
       market_timing: $("#btTiming").value !== "none",
       timing_window: Number($("#btTiming").value) || 0,
       oos_split: Number($("#btOOS").value) || 0,
@@ -1142,6 +1143,7 @@
             <span class="chip">${wLabel}</span>
             <span class="chip">持仓 ${res.items.length} 只</span>
             ${res.config.max_weight > 0 ? `<span class="chip">上限 ${res.config.max_weight}%</span>` : ""}
+            ${res.config.industry_cap > 0 ? `<span class="chip">行业上限 ${res.config.industry_cap}%</span>` : ""}
           </div>
         </div>
         <button class="icon-btn" data-close>✕</button>
@@ -1276,6 +1278,7 @@
     setVal("#btSlip", cfg.slippage_bps);
     setVal("#btWeighting", cfg.weighting);
     setVal("#btMaxWeight", cfg.max_weight);
+    setVal("#btIndustryCap", cfg.industry_cap || 0);
     setVal("#btBenchmark", cfg.benchmark);
     setVal("#btTiming", cfg.market_timing ? String(cfg.timing_window || 20) : "none");
     setVal("#btOOS", cfg.oos_split || 0);
@@ -1496,6 +1499,7 @@
               <span class="chip">${cfg.top_n > 0 ? "持仓 " + cfg.top_n : "前 " + (cfg.top_pct * 100).toFixed(0) + "%"}</span>
               <span class="chip">佣金 ${fmtNum(cfg.commission_bps, 1)} / 印花 ${fmtNum(cfg.stamp_duty_bps || 0, 1)} / 滑点 ${fmtNum(cfg.slippage_bps || 0, 1)} bps</span>
               <span class="chip">${weightLabel}${cfg.max_weight > 0 ? " · 上限 " + cfg.max_weight + "%" : ""}</span>
+              ${cfg.industry_cap > 0 ? `<span class="chip">行业上限 ${fmtNum(cfg.industry_cap, 0)}%</span>` : ""}
               ${cfg.long_short ? `<span class="chip amber">多空</span>` : ""}
               ${cfg.market_timing ? `<span class="chip amber">MA${cfg.timing_window || 20} 择时</span>` : ""}
               ${cfg.oos_split > 0 ? `<span class="chip">样本外 ${Math.round(cfg.oos_split * 100)}%</span>` : ""}
@@ -2064,9 +2068,12 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
             </div>
             <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">
               <span class="chip ${m.annual_return >= 0 ? "green" : "amber"}">${fmtPct(m.annual_return)}</span>
-              <label class="cmp-check" title="加入对比">
-                <input type="checkbox" data-cmp="${it.id}" ${selected ? "checked" : ""}> 对比
-              </label>
+              <div class="form-row" style="gap:6px;align-items:center">
+                <label class="cmp-check" title="加入对比">
+                  <input type="checkbox" data-cmp="${it.id}" ${selected ? "checked" : ""}> 对比
+                </label>
+                <button class="btn sm" data-del="${it.id}" style="padding:2px 8px;font-size:11px">删除</button>
+              </div>
             </div>
           </div>
           <div class="row">
@@ -2078,8 +2085,23 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
       }).join("");
       $$("#historyGrid .bt-card").forEach((card) => {
         card.addEventListener("click", (ev) => {
-          if (ev.target.closest(".cmp-check")) return;
+          if (ev.target.closest(".cmp-check") || ev.target.closest("[data-del]")) return;
           openHistoryDetail(card.dataset.id);
+        });
+      });
+      $$("#historyGrid [data-del]").forEach((btn) => {
+        btn.addEventListener("click", async (ev) => {
+          ev.stopPropagation();
+          const id = btn.dataset.del;
+          if (!window.confirm(`确定删除回测记录 #${id} 吗？此操作不可恢复。`)) return;
+          try {
+            await api(`/api/backtests/${id}`, { method: "DELETE" });
+            state.compare.delete(id);
+            toast(`已删除回测 #${id}`);
+            loadHistory();
+          } catch (e) {
+            toast(e.message, true);
+          }
         });
       });
       $$("#historyGrid .cmp-check input").forEach((cb) => {

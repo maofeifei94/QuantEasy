@@ -297,3 +297,10 @@ def backtest_detail(bt_id: int) -> dict:
     if item is None:
         raise HTTPException(status_code=404, detail="回测记录不存在")
     return item
+
+
+@app.delete("/api/backtests/{bt_id}")
+def remove_backtest(bt_id: int) -> dict:
+    if not database.delete_backtest(bt_id):
+        raise HTTPException(status_code=404, detail="回测记录不存在")
+    return {"ok": True, "id": bt_id}

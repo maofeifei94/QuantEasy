@@ -462,6 +462,12 @@ def get_backtest(bt_id: int) -> dict[str, Any] | None:
     return d
 
 
+def delete_backtest(bt_id: int) -> bool:
+    with _write_lock, get_conn() as conn:
+        cur = conn.execute("DELETE FROM backtests WHERE id=?", (bt_id,))
+        return cur.rowcount > 0
+
+
 def _now() -> str:
     from datetime import datetime
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")

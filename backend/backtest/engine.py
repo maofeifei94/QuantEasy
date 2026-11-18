@@ -31,7 +31,20 @@ def _bucket_weights(mask, ranks, k, n_valid, weighting: str, vol, short: bool):
     return w / jnp.maximum(total, 1e-12)
 
 
-@partial(jax.jit, static_argnames=("top_n", "long_short", "weighting", "max_weight"))
+def _apply_industry_cap(weights, industry_idx, industry_cap: float, n_industries: int):
+    """按行业总权重上限等比缩放，保持行业内个股相对权重。"""
+    if industry_cap <= 0 or n_industries <= 0:
+        return weights
+    groups = jnp.arange(n_industries)
+    onehot = (industry_idx[None, :] == groups[:, None]).astype(jnp.float64)
+    sums = weights @ onehot.T
+    scale = jnp.minimum(1.0, industry_cap / jnp.maximum(jnp.abs(sums), 1e-9))
+    stock_scale = jnp.take(scale, industry_idx, axis=1)
+    return weights * stock_scale
+
+
+@partial(jax.jit, static_argnames=("top_n", "long_short", "weighting", "max_weight",
+                                   "industry_cap", "n_industries"))
 def _target_weights(
     score: jnp.ndarray,
     valid: jnp.ndarray,
@@ -43,6 +56,9 @@ def _target_weights(
     max_weight: float,
     vol: jnp.ndarray,
     timing: jnp.ndarray,
+    industry_idx: jnp.ndarray,
+    industry_cap: float,
+    n_industries: int,
 ):
     T, N = score.shape
     clean = jnp.where(valid, jnp.nan_to_num(score, nan=NEG_INF, posinf=1e30, neginf=NEG_INF), NEG_INF)
@@ -71,13 +87,15 @@ def _target_weights(
             net = jnp.sum(jnp.abs(weights), axis=1, keepdims=True)
             weights = weights / jnp.maximum(net, 1e-12)
 
+    weights = _apply_industry_cap(weights, industry_idx, industry_cap, n_industries)
+
     target = jnp.where(rebalance[:, None], weights * timing[:, None], 0.0)
     return target
 
 
 @partial(jax.jit, static_argnames=(
     "top_n", "long_short", "weighting", "max_weight", "constraints",
-    "use_override", "stop_loss", "take_profit",
+    "use_override", "stop_loss", "take_profit", "industry_cap", "n_industries",
 ))
 def _simulate(
     score: jnp.ndarray,
@@ -101,14 +119,19 @@ def _simulate(
     use_override: bool,
     stop_loss: float,
     take_profit: float,
+    industry_idx: jnp.ndarray,
+    industry_cap: float,
+    n_industries: int,
 ):
     T, N = score.shape
     if use_override:
-        target = jnp.where(rebalance[:, None], weight_override * timing[:, None], 0.0)
+        capped = _apply_industry_cap(weight_override, industry_idx, industry_cap, n_industries)
+        target = jnp.where(rebalance[:, None], capped * timing[:, None], 0.0)
     else:
         target = _target_weights(
             score, valid, rebalance, top_frac, top_n, long_short,
             weighting, max_weight, vol, timing,
+            industry_idx, industry_cap, n_industries,
         )
 
     use_stop = stop_loss > 0 or take_profit > 0
@@ -234,6 +257,9 @@ def run_backtest(
     use_override: bool = False,
     stop_loss: float = 0.0,
     take_profit: float = 0.0,
+    industry_idx: np.ndarray | None = None,
+    industry_cap: float = 0.0,
+    n_industries: int = 0,
 ) -> dict[str, Any]:
     score_j = jnp.asarray(score, dtype=jnp.float64)
     close_j = jnp.asarray(close, dtype=jnp.float64)
@@ -246,6 +272,10 @@ def run_backtest(
     override_j = jnp.asarray(
         weight_override if weight_override is not None else np.zeros(close.shape), dtype=jnp.float64
     )
+    ind_j = jnp.asarray(
+        industry_idx if industry_idx is not None else np.zeros(close.shape[1], dtype=np.int32),
+        dtype=jnp.int32,
+    )
 
     nav, bench, net, drawdown, dw, W = _simulate(
         score_j, close_j, valid_j, reb_j,
@@ -254,6 +284,7 @@ def run_backtest(
         str(weighting), float(max_weight), vol_j, timing_j,
         buy_j, sell_j, bool(constraints), override_j, bool(use_override),
         float(stop_loss), float(take_profit),
+        ind_j, float(industry_cap), int(n_industries),
     )
     m = _metrics(net, nav, dw)
 
