@@ -166,6 +166,28 @@ def delete_factor(factor_id: int) -> dict:
     return {"ok": True}
 
 
+@app.put("/api/factors/{factor_id}")
+def update_factor(factor_id: int, payload: dict = Body(...)) -> dict:
+    name = (payload.get("name") or "").strip()
+    expression = (payload.get("expression") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="因子名称不能为空")
+    try:
+        from .factors.engine import validate
+        validate(expression)
+    except FactorError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if any(f["name"] == name and f["id"] != factor_id for f in database.list_factors()):
+        raise HTTPException(status_code=400, detail="因子名称已存在")
+    updated = database.update_factor(
+        factor_id, name, expression, payload.get("description", ""),
+        int(payload.get("direction", 1)),
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="因子不存在")
+    return updated
+
+
 @app.post("/api/factors/preview")
 def factor_preview(payload: dict = Body(...)) -> dict:
     try:

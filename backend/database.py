@@ -408,6 +408,22 @@ def delete_factor(factor_id: int) -> None:
         conn.execute("DELETE FROM custom_factors WHERE id=?", (factor_id,))
 
 
+def update_factor(factor_id: int, name: str, expression: str,
+                  description: str, direction: int) -> dict | None:
+    with _write_lock, get_conn() as conn:
+        cur = conn.execute(
+            """UPDATE custom_factors SET name=?, expression=?, description=?, direction=?
+               WHERE id=?""",
+            (name, expression, description, direction, factor_id),
+        )
+        if cur.rowcount == 0:
+            return None
+        row = conn.execute(
+            "SELECT * FROM custom_factors WHERE id=?", (factor_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
 def save_backtest(name: str, config: dict, metrics: dict, result: dict) -> int:
     with _write_lock, get_conn() as conn:
         cur = conn.execute(

@@ -17,6 +17,8 @@
     btResult: null,
     syncTimer: null,
     stockFilter: "",
+    factorQuery: "",
+    historyQuery: "",
     polling: false,
   };
 
@@ -435,7 +437,12 @@
 
   function renderFactorList() {
     const box = $("#factorList");
-    const groups = factorGroups();
+    const q = state.factorQuery.trim().toLowerCase();
+    const groups = factorGroups()
+      .map(([cat, items]) => [cat, items.filter((f) =>
+        !q || (f.label || f.name || "").toLowerCase().includes(q)
+          || (f.expression || "").toLowerCase().includes(q))])
+      .filter(([, items]) => items.length);
     if (!groups.length) {
       box.innerHTML = `<div class="empty" style="border:none"><p>因子库为空</p></div>`;
       return;
@@ -448,7 +455,7 @@
           <span>${esc(f.label || f.name)}</span>
           <span style="display:flex;align-items:center;gap:6px">
             <span class="dir ${f.direction > 0 ? "up" : "down"}">${f.direction > 0 ? "↑" : "↓"}</span>
-            ${f.is_custom ? `<span class="del" data-del="${esc(f.id)}" title="删除">✕</span>` : ""}
+            ${f.is_custom ? `<span class="edit" data-edit="${esc(f.id)}" title="编辑">✎</span><span class="del" data-del="${esc(f.id)}" title="删除">✕</span>` : ""}
           </span>
         </button>`;
       }).join("")}
@@ -459,6 +466,12 @@
         if (del) {
           ev.stopPropagation();
           deleteFactor(del.dataset.del);
+          return;
+        }
+        const edit = ev.target.closest("[data-edit]");
+        if (edit) {
+          ev.stopPropagation();
+          openFactorModal(findFactorById(edit.dataset.edit));
           return;
         }
         selectFactor(btn.dataset.id);
@@ -779,29 +792,34 @@
     } catch (e) { toast(e.message, true); }
   }
 
-  function openFactorModal() {
+  function openFactorModal(existing = null) {
+    const editing = !!existing;
+    const expr = existing ? existing.expression : "rank(ts_mean(close, 20) / ts_mean(close, 60) - 1)";
     openModal(`
       <div class="modal-head">
-        <div><h3>新建自定义因子</h3><div class="panel-sub" style="margin-top:3px">表达式将作用于 (交易日 × 股票) 面板数组</div></div>
+        <div><h3>${editing ? "编辑自定义因子" : "新建自定义因子"}</h3><div class="panel-sub" style="margin-top:3px">表达式将作用于 (交易日 × 股票) 面板数组</div></div>
         <button class="icon-btn" data-close>✕</button>
       </div>
       <div class="form-grid">
-        <div class="field"><label>因子名称</label><input id="nfName" type="text" placeholder="如：量价背离_20"></div>
+        <div class="field"><label>因子名称</label><input id="nfName" type="text" placeholder="如：量价背离_20" value="${esc(existing ? existing.name : "")}"></div>
         <div class="field"><label>方向</label>
-          <select id="nfDirection"><option value="1">值越大越好（正向）</option><option value="-1">值越小越好（反向）</option></select>
+          <select id="nfDirection">
+            <option value="1" ${existing && existing.direction < 0 ? "" : "selected"}>值越大越好（正向）</option>
+            <option value="-1" ${existing && existing.direction < 0 ? "selected" : ""}>值越小越好（反向）</option>
+          </select>
         </div>
       </div>
       <div class="field" style="margin-top:12px"><label>因子表达式</label>
-        <textarea id="nfExpr" rows="4" placeholder="rank(ts_mean(close, 20) / ts_mean(close, 60) - 1)">rank(ts_mean(close, 20) / ts_mean(close, 60) - 1)</textarea>
+        <textarea id="nfExpr" rows="4">${esc(expr)}</textarea>
       </div>
-      <div class="field" style="margin-top:12px"><label>描述</label><input id="nfDesc" type="text" placeholder="说明因子逻辑（可选）"></div>
+      <div class="field" style="margin-top:12px"><label>描述</label><input id="nfDesc" type="text" placeholder="说明因子逻辑（可选）" value="${esc(existing ? (existing.description || "") : "")}"></div>
       <div style="margin-top:14px">
         <div class="panel-sub">可用字段：<code style="color:var(--green)">open high low close volume amount vwap returns</code></div>
         <div class="fn-chips" id="fnChips"></div>
       </div>
       <div class="modal-foot">
         <button class="btn ghost" data-close>取消</button>
-        <button class="btn primary" id="nfSave">保存因子</button>
+        <button class="btn primary" id="nfSave">${editing ? "保存修改" : "保存因子"}</button>
       </div>`);
     const fns = ["ts_mean(x, 20)", "ts_std(x, 20)", "ts_rank(x, 20)", "ts_delay(x, 20)",
       "ts_delta(x, 5)", "ts_corr(x, y, 20)", "ts_zscore(x, 20)", "ts_skew(x, 20)",
@@ -819,18 +837,18 @@
       const expression = $("#nfExpr").value.trim();
       if (!name || !expression) { toast("名称与表达式不能为空", true); return; }
       try {
-        const created = await api("/api/factors", {
-          method: "POST",
-          body: {
-            name, expression,
-            description: $("#nfDesc").value.trim(),
-            direction: Number($("#nfDirection").value),
-          },
-        });
+        const payload = {
+          name, expression,
+          description: $("#nfDesc").value.trim(),
+          direction: Number($("#nfDirection").value),
+        };
+        const saved = editing
+          ? await api(`/api/factors/${existing.id}`, { method: "PUT", body: payload })
+          : await api("/api/factors", { method: "POST", body: payload });
         closeModal();
         await loadFactors();
-        selectFactor(created.id);
-        toast("自定义因子已保存");
+        selectFactor(saved.id);
+        toast(editing ? "因子已更新" : "自定义因子已保存");
       } catch (e) { toast(e.message, true); }
     });
   }
@@ -1442,8 +1460,10 @@
               ${factorChips}${preChips}
             </div>
           </div>
-          <div class="form-row" style="gap:6px">
-            <button class="btn sm" id="exportCsv">导出 CSV</button>
+          <div class="form-row" style="gap:6px;flex-wrap:wrap;justify-content:flex-end">
+            <button class="btn sm" id="exportCsv">导出净值</button>
+            <button class="btn sm" id="exportTrades">导出交易</button>
+            <button class="btn sm" id="exportHoldings">导出持仓</button>
             <button class="btn sm" id="exportReport">导出报告</button>
           </div>
         </div>
@@ -1649,8 +1669,30 @@
     }
     const exportBtn = $("#exportCsv");
     if (exportBtn) exportBtn.addEventListener("click", () => exportBacktestCsv(res));
+    const tradesBtn = $("#exportTrades");
+    if (tradesBtn) tradesBtn.addEventListener("click", () => exportTradesCsv(res));
+    const holdingsBtn = $("#exportHoldings");
+    if (holdingsBtn) holdingsBtn.addEventListener("click", () => exportHoldingsCsv(res));
     const reportBtn = $("#exportReport");
     if (reportBtn) reportBtn.addEventListener("click", () => exportBacktestReport(res));
+  }
+
+  function exportTradesCsv(res) {
+    const rows = [["date", "side", "code", "name", "weight_change"]];
+    (res.trades || []).forEach((t) => t.items.forEach((i) =>
+      rows.push([t.date, i.side, i.code, i.name, i.change])));
+    if (rows.length < 2) { toast("暂无交易记录", true); return; }
+    downloadCsv(rows, `trades_${res.id || "latest"}.csv`);
+    toast("交易明细已导出 CSV");
+  }
+
+  function exportHoldingsCsv(res) {
+    const rows = [["date", "code", "name", "weight"]];
+    (res.holdings || []).forEach((h) => h.items.forEach((i) =>
+      rows.push([h.date, i.code, i.name, i.weight])));
+    if (rows.length < 2) { toast("暂无持仓记录", true); return; }
+    downloadCsv(rows, `holdings_${res.id || "latest"}.csv`);
+    toast("持仓明细已导出 CSV");
   }
 
   function exportBacktestReport(res) {
@@ -1949,9 +1991,11 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
     const grid = $("#historyGrid");
     try {
       const data = await api("/api/backtests?limit=60");
-      const items = data.items || [];
-      const existing = new Set(items.map((it) => String(it.id)));
+      const rawItems = data.items || [];
+      const existing = new Set(rawItems.map((it) => String(it.id)));
       state.compare = new Set([...state.compare].filter((id) => existing.has(id)));
+      const q = state.historyQuery.trim().toLowerCase();
+      const items = q ? rawItems.filter((it) => (it.name || "").toLowerCase().includes(q)) : rawItems;
       if (!items.length) {
         grid.innerHTML = `<div class="empty" style="grid-column:1/-1;padding:60px">
           <p>还没有回测记录</p><div class="sub">前往「回测引擎」运行第一次回测</div></div>`;
@@ -2171,7 +2215,15 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
       state.stockFilter = e.target.value;
       renderStocks();
     });
-    $("#newFactorBtn").addEventListener("click", openFactorModal);
+    $("#factorSearch").addEventListener("input", (e) => {
+      state.factorQuery = e.target.value;
+      renderFactorList();
+    });
+    $("#historySearch").addEventListener("input", (e) => {
+      state.historyQuery = e.target.value;
+      loadHistory();
+    });
+    $("#newFactorBtn").addEventListener("click", () => openFactorModal());
     $("#corrBtn").addEventListener("click", openCorrelationModal);
     $("#factoryBtn").addEventListener("click", openFactory);
     $("#previewBtn").addEventListener("click", previewFactor);

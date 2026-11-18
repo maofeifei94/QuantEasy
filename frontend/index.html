@@ -214,6 +214,9 @@
               <button class="btn sm" id="newFactorBtn">＋ 新建</button>
             </div>
           </div>
+          <div style="padding:0 4px 8px">
+            <input type="text" id="factorSearch" placeholder="搜索因子名称或表达式" style="font-size:11.5px;padding:6px 9px">
+          </div>
           <div class="factor-list" id="factorList"></div>
         </div>
 
@@ -451,6 +454,7 @@
           <div class="panel-sub">所有回测结果均持久化在 SQLite（backtests 表）中</div>
         </div>
         <div class="form-row" style="gap:6px">
+          <input type="text" id="historySearch" placeholder="搜索名称" style="width:150px;font-size:12px;padding:6px 9px">
           <button class="btn sm" id="strategyCombineBtn">策略组合</button>
           <button class="btn sm" id="refreshHistory">刷新</button>
         </div>

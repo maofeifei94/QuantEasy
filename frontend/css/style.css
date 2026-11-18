@@ -404,6 +404,8 @@ td .cd { font-family: var(--mono); font-size: 11px; color: var(--faint); }
 .fitem .dir.down { color: var(--amber); }
 .fitem .del { opacity: 0; color: var(--red); font-size: 14px; padding: 0 2px; }
 .fitem:hover .del { opacity: .7; }
+.fitem .edit { opacity: 0; color: var(--blue); font-size: 12px; padding: 0 2px; }
+.fitem:hover .edit { opacity: .85; }
 
 .expr-box {
   font-family: var(--mono); font-size: 12px; line-height: 1.7;
