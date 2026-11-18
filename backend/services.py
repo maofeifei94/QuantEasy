@@ -973,6 +973,8 @@ def run_backtest(payload: dict) -> dict:
     timing_window = int(payload.get("timing_window") or 0) if payload.get("market_timing") else 0
     timing = _market_timing(dates, dates[0], dates[-1], timing_window) if timing_window > 1 else None
     trade_constraints = bool(payload.get("trade_constraints"))
+    stop_loss = max(0.0, min(float(payload.get("stop_loss_pct") or 0), 50)) / 100.0
+    take_profit = max(0.0, min(float(payload.get("take_profit_pct") or 0), 200)) / 100.0
     buy_block = sell_block = None
     if trade_constraints:
         rets = data["returns"]
@@ -988,6 +990,7 @@ def run_backtest(payload: dict) -> dict:
         max_weight=max_weight, vol=vol, timing=timing,
         buy_block=buy_block, sell_block=sell_block, constraints=trade_constraints,
         weight_override=weight_override, use_override=use_override,
+        stop_loss=stop_loss, take_profit=take_profit,
     )
     bench = sim["benchmark"]
     benchmark_name = "股票池等权"
@@ -1113,6 +1116,8 @@ def run_backtest(payload: dict) -> dict:
             "market_timing": timing_window > 1,
             "timing_window": timing_window,
             "trade_constraints": trade_constraints,
+            "stop_loss_pct": stop_loss * 100,
+            "take_profit_pct": take_profit * 100,
             "oos_split": split,
             "filters": payload.get("filters") or {},
             "preprocess": factor["preprocess"],
@@ -1159,6 +1164,8 @@ def optimize_backtest(payload: dict) -> dict:
     timing = _market_timing(data["dates"], data["dates"][0], data["dates"][-1],
                             timing_window) if timing_window > 1 else None
     trade_constraints = bool(payload.get("trade_constraints"))
+    stop_loss = max(0.0, min(float(payload.get("stop_loss_pct") or 0), 50)) / 100.0
+    take_profit = max(0.0, min(float(payload.get("take_profit_pct") or 0), 200)) / 100.0
     buy_block = sell_block = None
     if trade_constraints:
         rets = data["returns"]
@@ -1185,6 +1192,7 @@ def optimize_backtest(payload: dict) -> dict:
                 max_weight=max_weight, vol=vol, timing=timing,
                 buy_block=buy_block, sell_block=sell_block, constraints=trade_constraints,
                 weight_override=override, use_override=use_override,
+                stop_loss=stop_loss, take_profit=take_profit,
             )
             m = sim["metrics"]
             cells.append({
@@ -1322,6 +1330,8 @@ def batch_backtest(payload: dict) -> dict:
     timing = _market_timing(data["dates"], data["dates"][0], data["dates"][-1],
                             timing_window) if timing_window > 1 else None
     trade_constraints = bool(payload.get("trade_constraints"))
+    stop_loss = max(0.0, min(float(payload.get("stop_loss_pct") or 0), 50)) / 100.0
+    take_profit = max(0.0, min(float(payload.get("take_profit_pct") or 0), 200)) / 100.0
     buy_block = sell_block = None
     if trade_constraints:
         rets = data["returns"]
@@ -1351,6 +1361,7 @@ def batch_backtest(payload: dict) -> dict:
                 weighting=weighting, max_weight=max_weight, vol=vol, timing=timing,
                 buy_block=buy_block, sell_block=sell_block, constraints=trade_constraints,
                 weight_override=override, use_override=use_override,
+                stop_loss=stop_loss, take_profit=take_profit,
             )
             stats = analysis.quick_ic(score, data["close"], valid, 5)
         except Exception:

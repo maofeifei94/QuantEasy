@@ -201,6 +201,34 @@
     renderMarket();
   }
 
+  async function openQuality() {
+    try {
+      const q = await api("/api/data/quality");
+      const cards = [
+        ["交易日", fmtInt(q.trading_days)],
+        ["股票数量", fmtInt(q.stocks)],
+        ["数据覆盖率", fmtPct(q.coverage, 1, false)],
+        ["缺失行数", fmtInt(q.missing_rows)],
+        ["零成交量", fmtInt(q.zero_volume)],
+        ["异常收盘价", fmtInt(q.bad_close)],
+        ["单股最少记录", fmtInt(q.min_bars_per_stock)],
+        ["单股平均记录", fmtNum(q.avg_bars_per_stock, 0)],
+        ["指数记录", fmtInt(q.index_rows)],
+      ];
+      openModal(`
+        <div class="modal-head"><div><h3>数据质量检测</h3>
+          <div class="panel-sub" style="margin-top:3px">检查覆盖率、缺失值与异常值</div></div>
+          <button class="icon-btn" data-close>✕</button></div>
+        <div class="grid-3" style="grid-template-columns:repeat(3,1fr)">
+          ${cards.map(([k, v]) => `<div class="perf"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("")}
+        </div>
+        <div class="hint-box" style="margin-top:14px">覆盖率 = 实际记录数 / (交易日 × 股票数)。若覆盖率明显低于 100%，可能存在停牌、退市或同步区间不一致。</div>
+        <div class="modal-foot"><button class="btn primary" data-close>关闭</button></div>`, true);
+    } catch (e) {
+      toast(e.message, true);
+    }
+  }
+
   async function loadIndices() {
     try {
       const data = await api("/api/indices");
@@ -1007,6 +1035,8 @@
       timing_window: Number($("#btTiming").value) || 0,
       oos_split: Number($("#btOOS").value) || 0,
       trade_constraints: $("#filterTrade").checked,
+      stop_loss_pct: Number($("#btStopLoss").value) || 0,
+      take_profit_pct: Number($("#btTakeProfit").value) || 0,
       rebalance_days: Number($("#btRebalance").value),
       top_n: Number($("#btTopN").value) || 0,
       top_pct: Number($("#btTopPct").value) || 0.2,
@@ -1231,6 +1261,8 @@
     setVal("#btBenchmark", cfg.benchmark);
     setVal("#btTiming", cfg.market_timing ? String(cfg.timing_window || 20) : "none");
     setVal("#btOOS", cfg.oos_split || 0);
+    setVal("#btStopLoss", cfg.stop_loss_pct || 0);
+    setVal("#btTakeProfit", cfg.take_profit_pct || 0);
     const filters = cfg.filters || {};
     $("#filterStar").checked = filters.exclude_star !== false;
     $("#filterBJ").checked = filters.exclude_bj !== false;
@@ -1402,6 +1434,8 @@
               ${cfg.market_timing ? `<span class="chip amber">MA${cfg.timing_window || 20} 择时</span>` : ""}
               ${cfg.oos_split > 0 ? `<span class="chip">样本外 ${Math.round(cfg.oos_split * 100)}%</span>` : ""}
               ${cfg.trade_constraints ? `<span class="chip amber">涨跌停/停牌限制</span>` : ""}
+              ${cfg.stop_loss_pct > 0 ? `<span class="chip amber">止损 ${fmtNum(cfg.stop_loss_pct, 0)}%</span>` : ""}
+              ${cfg.take_profit_pct > 0 ? `<span class="chip">止盈 ${fmtNum(cfg.take_profit_pct, 0)}%</span>` : ""}
               <span class="chip green">基准 · ${benchName}</span>
             </div>
             <div class="factor-meta" style="margin:7px 0 0">
@@ -2106,6 +2140,7 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
     $$("[data-goto]").forEach((b) => b.addEventListener("click", () => switchPage(b.dataset.goto)));
 
     $("#syncBtn").addEventListener("click", startSync);
+    $("#qualityBtn").addEventListener("click", openQuality);
     $("#stockSearch").addEventListener("input", (e) => {
       state.stockFilter = e.target.value;
       renderStocks();
@@ -2143,8 +2178,7 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
     $("#saveUniverseBtn").addEventListener("click", (e) => {
       e.preventDefault();
       saveUniverse();
-    });
-    $("#loadUniverseBtn").addEventListener("click", (e) => {
+    });    $("#loadUniverseBtn").addEventListener("click", (e) => {
       e.preventDefault();
       openLoadUniverse();
     });

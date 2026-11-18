@@ -107,6 +107,11 @@ def indices() -> dict:
     return {"items": database.list_indices()}
 
 
+@app.get("/api/data/quality")
+def data_quality() -> dict:
+    return database.data_quality()
+
+
 @app.get("/api/universes")
 def universes() -> dict:
     return {"items": database.list_universes()}

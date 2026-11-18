@@ -223,6 +223,40 @@ def delete_universe(universe_id: int) -> None:
         conn.execute("DELETE FROM universes WHERE id=?", (universe_id,))
 
 
+def data_quality() -> dict[str, Any]:
+    with get_conn() as conn:
+        days = conn.execute("SELECT COUNT(DISTINCT date) c FROM daily_bars").fetchone()["c"]
+        stocks = conn.execute("SELECT COUNT(*) c FROM stocks").fetchone()["c"]
+        row = conn.execute(
+            """SELECT COUNT(*) total,
+                      SUM(CASE WHEN close IS NULL OR close <= 0 THEN 1 ELSE 0 END) bad_close,
+                      SUM(CASE WHEN volume IS NULL OR volume <= 0 THEN 1 ELSE 0 END) zero_vol,
+                      SUM(CASE WHEN amount IS NULL OR amount <= 0 THEN 1 ELSE 0 END) bad_amount
+               FROM daily_bars"""
+        ).fetchone()
+        per_stock = conn.execute(
+            "SELECT MIN(c) low, MAX(c) high, AVG(c) avg FROM "
+            "(SELECT code, COUNT(*) c FROM daily_bars GROUP BY code)"
+        ).fetchone()
+        indices = conn.execute("SELECT COUNT(*) c FROM index_bars").fetchone()["c"]
+    expected = max(days * stocks, 1)
+    return {
+        "trading_days": days,
+        "stocks": stocks,
+        "rows": row["total"] or 0,
+        "expected_rows": expected,
+        "coverage": round((row["total"] or 0) / expected, 4),
+        "missing_rows": max(expected - (row["total"] or 0), 0),
+        "bad_close": row["bad_close"] or 0,
+        "zero_volume": row["zero_vol"] or 0,
+        "bad_amount": row["bad_amount"] or 0,
+        "min_bars_per_stock": per_stock["low"] or 0,
+        "max_bars_per_stock": per_stock["high"] or 0,
+        "avg_bars_per_stock": round(per_stock["avg"] or 0, 1),
+        "index_rows": indices,
+    }
+
+
 def set_meta(key: str, value: Any) -> None:
     with _write_lock, get_conn() as conn:
         conn.execute(

@@ -75,7 +75,10 @@ def _target_weights(
     return target
 
 
-@partial(jax.jit, static_argnames=("top_n", "long_short", "weighting", "max_weight", "constraints", "use_override"))
+@partial(jax.jit, static_argnames=(
+    "top_n", "long_short", "weighting", "max_weight", "constraints",
+    "use_override", "stop_loss", "take_profit",
+))
 def _simulate(
     score: jnp.ndarray,
     close: jnp.ndarray,
@@ -96,6 +99,8 @@ def _simulate(
     constraints: bool,
     weight_override: jnp.ndarray,
     use_override: bool,
+    stop_loss: float,
+    take_profit: float,
 ):
     T, N = score.shape
     if use_override:
@@ -106,18 +111,51 @@ def _simulate(
             weighting, max_weight, vol, timing,
         )
 
-    def fill(w_prev, inputs):
-        tgt, rb, bb, sb = inputs
-        desired = jnp.where(rb, tgt, w_prev)
+    use_stop = stop_loss > 0 or take_profit > 0
+
+    def fill(state, inputs):
+        w_prev, entry = state
+        tgt, rb, bb, sb, px = inputs
+        if use_stop:
+            has = (w_prev > 1e-9) & (entry > 0) & (~sb)
+            ret = jnp.where(entry > 0, px / jnp.maximum(entry, 1e-9) - 1.0, 0.0)
+            hit = has & (
+                (ret <= -stop_loss) |
+                ((take_profit > 0) & (ret >= take_profit))
+            )
+            w_stop = jnp.where(hit, 0.0, w_prev)
+            entry_stop = jnp.where(hit, 0.0, entry)
+            tgt_adj = jnp.where(hit, 0.0, tgt)
+        else:
+            w_stop = w_prev
+            entry_stop = entry
+            tgt_adj = tgt
+
+        desired = jnp.where(rb, tgt_adj, w_stop)
         if constraints:
             adjusted = jnp.where(
-                bb & (tgt > w_prev), w_prev,
-                jnp.where(sb & (tgt < w_prev), w_prev, tgt),
+                bb & (desired > w_stop), w_stop,
+                jnp.where(sb & (desired < w_stop), w_stop, desired),
             )
-            desired = jnp.where(rb, adjusted, w_prev)
-        return desired, desired
+            desired = adjusted
 
-    _, W = jax.lax.scan(fill, jnp.zeros(N), (target, rebalance, buy_block, sell_block))
+        if use_stop:
+            new_entry = jnp.where(
+                rb,
+                jnp.where(
+                    (tgt_adj > 1e-9) & (w_stop <= 1e-9), px,
+                    jnp.where(tgt_adj <= 1e-9, 0.0, entry_stop),
+                ),
+                entry_stop,
+            )
+        else:
+            new_entry = entry
+        return (desired, new_entry), desired
+
+    _, W = jax.lax.scan(
+        fill, (jnp.zeros(N), jnp.zeros(N)),
+        (target, rebalance, buy_block, sell_block, close),
+    )
 
     prev_c, next_c = close[:-1], close[1:]
     rets = next_c / prev_c - 1.0
@@ -194,6 +232,8 @@ def run_backtest(
     constraints: bool = False,
     weight_override: np.ndarray | None = None,
     use_override: bool = False,
+    stop_loss: float = 0.0,
+    take_profit: float = 0.0,
 ) -> dict[str, Any]:
     score_j = jnp.asarray(score, dtype=jnp.float64)
     close_j = jnp.asarray(close, dtype=jnp.float64)
@@ -213,6 +253,7 @@ def run_backtest(
         float(stamp_duty), float(slippage),
         str(weighting), float(max_weight), vol_j, timing_j,
         buy_j, sell_j, bool(constraints), override_j, bool(use_override),
+        float(stop_loss), float(take_profit),
     )
     m = _metrics(net, nav, dw)
 
