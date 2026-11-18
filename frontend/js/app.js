@@ -1010,6 +1010,43 @@
     }
   }
 
+  async function saveComboAsFactor() {
+    if (!state.btFactors.length) { toast("请先添加因子", true); return; }
+    const parts = [];
+    const names = [];
+    state.btFactors.forEach((item) => {
+      const f = findFactorById(item.id);
+      if (!f) return;
+      const w = (Number(item.weight) || 0) * (f.direction < 0 ? -1 : 1);
+      if (!w) return;
+      parts.push(`${w >= 0 ? "+" : "-"}${Math.abs(w).toFixed(2)} * rank(${f.expression})`);
+      names.push(f.label || f.name);
+    });
+    if (!parts.length) { toast("组合权重不能全部为 0", true); return; }
+    let expr = parts.join(" ").trim();
+    if (expr.startsWith("+")) expr = expr.slice(1).trim();
+    expr = `(${expr})`;
+    const name = window.prompt("自定义因子名称", `组合因子_${new Date().toISOString().slice(5, 10).replace("-", "")}`);
+    if (!name) return;
+    try {
+      const saved = await api("/api/factors", {
+        method: "POST",
+        body: {
+          name: name.trim(),
+          expression: expr,
+          direction: 1,
+          description: `由组合因子生成：${names.join(" + ")}`,
+        },
+      });
+      await loadFactors();
+      switchPage("factors");
+      selectFactor(saved.id);
+      toast(`组合因子「${name.trim()}」已保存`);
+    } catch (e) {
+      toast(e.message, true);
+    }
+  }
+
   function renderUniverse() {
     const box = $("#universeList");
     if (!state.stocks.length) {
@@ -2654,6 +2691,7 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
     $("#previewBtn").addEventListener("click", previewFactor);
     $("#addFactorBtn").addEventListener("click", addFactorToCombo);
     $("#icWeightBtn").addEventListener("click", autoWeightByIC);
+    $("#saveComboFactorBtn").addEventListener("click", saveComboAsFactor);
     $$(".tpl-btn").forEach((btn) => btn.addEventListener("click", () => applyTemplate(btn.dataset.tpl)));
     $("#signalBtn").addEventListener("click", openSignal);
     $("#saveConfigBtn").addEventListener("click", saveCurrentConfig);
