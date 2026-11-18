@@ -343,6 +343,14 @@
           <div class="form-divider"></div>
           <div class="form-grid">
             <div class="field">
+              <label>调仓方式</label>
+              <select id="btRebalanceMode">
+                <option value="interval">按交易日间隔</option>
+                <option value="weekly">每周固定星期</option>
+                <option value="monthly">每月第 N 个交易日</option>
+              </select>
+            </div>
+            <div class="field" id="rbIntervalWrap">
               <label>调仓周期 <span class="hint">交易日</span></label>
               <select id="btRebalance">
                 <option value="1">每日</option>
@@ -350,6 +358,20 @@
                 <option value="10" selected>双周</option>
                 <option value="21">每月</option>
               </select>
+            </div>
+            <div class="field" id="rbWeekdayWrap" style="display:none">
+              <label>调仓星期</label>
+              <select id="btRebalanceWeekday">
+                <option value="0">周一</option>
+                <option value="1">周二</option>
+                <option value="2">周三</option>
+                <option value="3">周四</option>
+                <option value="4">周五</option>
+              </select>
+            </div>
+            <div class="field" id="rbMonthWrap" style="display:none">
+              <label>每月第几个交易日</label>
+              <input type="number" id="btRebalanceMonthDay" value="1" min="1" max="10">
             </div>
             <div class="field">
               <label>持仓数量 <span class="hint">0=按比例</span></label>

@@ -915,6 +915,16 @@
   }
 
   /* ------------------------------ 回测 ------------------------------ */
+  function updateRebalanceUI() {
+    const mode = ($("#btRebalanceMode") || {}).value || "interval";
+    const interval = $("#rbIntervalWrap");
+    const week = $("#rbWeekdayWrap");
+    const month = $("#rbMonthWrap");
+    if (interval) interval.style.display = mode === "interval" ? "" : "none";
+    if (week) week.style.display = mode === "weekly" ? "" : "none";
+    if (month) month.style.display = mode === "monthly" ? "" : "none";
+  }
+
   function renderAddFactorSelect() {
     const sel = $("#addFactorSelect");
     if (!sel) return;
@@ -1120,6 +1130,9 @@
       stop_loss_pct: Number($("#btStopLoss").value) || 0,
       take_profit_pct: Number($("#btTakeProfit").value) || 0,
       rebalance_days: Number($("#btRebalance").value),
+      rebalance_mode: $("#btRebalanceMode").value,
+      rebalance_weekday: Number($("#btRebalanceWeekday").value) || 0,
+      rebalance_month_day: Number($("#btRebalanceMonthDay").value) || 1,
       top_n: Number($("#btTopN").value) || 0,
       top_pct: Number($("#btTopPct").value) || 0.2,
       commission_bps: Number($("#btCommission").value) || 0,
@@ -1334,6 +1347,10 @@
     setVal("#btStart", cfg.start);
     setVal("#btEnd", cfg.end);
     setVal("#btRebalance", cfg.rebalance_days);
+    setVal("#btRebalanceMode", cfg.rebalance_mode || "interval");
+    setVal("#btRebalanceWeekday", cfg.rebalance_weekday || 0);
+    setVal("#btRebalanceMonthDay", cfg.rebalance_month_day || 1);
+    updateRebalanceUI();
     setVal("#btTopN", cfg.top_n);
     setVal("#btTopPct", cfg.top_pct);
     setVal("#btCommission", cfg.commission_bps);
@@ -1553,6 +1570,11 @@
           ? (state.universes.find((u) => "universe:" + u.id === cfg.benchmark) || {}).name || "自选池基准"
           : "股票池等权");
     const weightLabel = { equal: "等权", score: "得分加权", inverse_vol: "波动率倒数", risk_parity: "风险平价" }[cfg.weighting] || "等权";
+    const rebalanceLabel = cfg.rebalance_mode === "weekly"
+      ? `每周${["一", "二", "三", "四", "五"][cfg.rebalance_weekday || 0]}调仓`
+      : cfg.rebalance_mode === "monthly"
+        ? `每月第 ${cfg.rebalance_month_day || 1} 个交易日调仓`
+        : `${cfg.rebalance_days} 日调仓`;
 
     $("#btResults").innerHTML = `
       <div class="panel">
@@ -1562,7 +1584,7 @@
             <div class="factor-meta" style="margin:8px 0 0">
               <span class="chip">${esc(res.universe.start)} → ${esc(res.universe.end)}</span>
               <span class="chip">${res.universe.stocks} 只股票</span>
-              <span class="chip">${cfg.rebalance_days} 日调仓</span>
+              <span class="chip">${rebalanceLabel}</span>
               <span class="chip">${cfg.top_n > 0 ? "持仓 " + cfg.top_n : "前 " + (cfg.top_pct * 100).toFixed(0) + "%"}</span>
               <span class="chip">佣金 ${fmtNum(cfg.commission_bps, 1)} / 印花 ${fmtNum(cfg.stamp_duty_bps || 0, 1)} / 滑点 ${fmtNum(cfg.slippage_bps || 0, 1)} bps</span>
               <span class="chip">${weightLabel}${cfg.max_weight > 0 ? " · 上限 " + cfg.max_weight + "%" : ""}</span>
@@ -2613,6 +2635,7 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
     $("#saveConfigBtn").addEventListener("click", saveCurrentConfig);
     $("#loadConfigBtn").addEventListener("click", openLoadConfig);
     $("#runBacktestBtn").addEventListener("click", runBacktest);
+    $("#btRebalanceMode").addEventListener("change", updateRebalanceUI);
     $("#scrRun").addEventListener("click", runScreener);
     $("#scrAdd").addEventListener("click", () => {
       if (state.screenerConds.length >= 6) { toast("最多支持 6 个条件", true); return; }

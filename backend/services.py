@@ -514,7 +514,10 @@ def mine_factors(payload: dict) -> dict:
 # --------------------------------------------------------------------------- #
 # 回测
 # --------------------------------------------------------------------------- #
-def _rebalance_mask(score: np.ndarray, valid: np.ndarray, freq: int) -> tuple[np.ndarray, int]:
+def _rebalance_mask(score: np.ndarray, valid: np.ndarray, freq: int,
+                    dates: list[str] | None = None, mode: str = "interval",
+                    weekday: int = 0, month_day: int = 1) -> tuple[np.ndarray, int]:
+    """生成调仓掩码：按交易日间隔 / 每周固定星期 / 每月第 N 个交易日。"""
     T, N = score.shape
     usable = (np.isfinite(score) & valid).sum(axis=1)
     min_stocks = max(2, min(10, N))
@@ -523,8 +526,34 @@ def _rebalance_mask(score: np.ndarray, valid: np.ndarray, freq: int) -> tuple[np
         raise ValueError("因子在所选区间内没有足够的有效值，请检查表达式或放宽过滤条件")
     warmup = int(eligible[0])
     mask = np.zeros(T, dtype=bool)
-    mask[warmup::max(1, freq)] = True
+    if mode == "weekly" and dates:
+        weekday = max(0, min(int(weekday), 4))
+        for i in range(warmup, T):
+            if dt.date.fromisoformat(dates[i]).weekday() == weekday:
+                mask[i] = True
+        if not mask.any():
+            mask[warmup::max(1, freq)] = True
+    elif mode == "monthly" and dates:
+        month_day = max(1, min(int(month_day), 10))
+        counts: dict[str, int] = {}
+        for i in range(warmup, T):
+            key = dates[i][:7]
+            counts[key] = counts.get(key, 0) + 1
+            if counts[key] == month_day:
+                mask[i] = True
+    else:
+        mask[warmup::max(1, freq)] = True
     return mask, warmup
+
+
+def _rebalance_args(payload: dict) -> tuple[str, int, int]:
+    """解析调仓方式参数：(mode, weekday, month_day)。"""
+    mode = payload.get("rebalance_mode") or "interval"
+    if mode not in ("interval", "weekly", "monthly"):
+        mode = "interval"
+    weekday = max(0, min(int(payload.get("rebalance_weekday") or 0), 4))
+    month_day = max(1, min(int(payload.get("rebalance_month_day") or 1), 10))
+    return mode, weekday, month_day
 
 
 def _monthly_returns(dates: list[str], nav: np.ndarray) -> list[dict]:
@@ -1189,7 +1218,10 @@ def run_backtest(payload: dict) -> dict:
     valid = _apply_filters(data, payload.get("filters"))
 
     freq = max(1, min(int(payload.get("rebalance_days") or 10), 120))
-    rebalance, warmup = _rebalance_mask(score, valid, freq)
+    reb_mode, reb_weekday, reb_month_day = _rebalance_args(payload)
+    rebalance, warmup = _rebalance_mask(
+        score, valid, freq, dates, reb_mode, reb_weekday, reb_month_day
+    )
     top_n = int(payload.get("top_n") or 0)
     top_frac = float(payload.get("top_pct") or 0.2)
     commission_bps = float(payload.get("commission_bps") or 15)
@@ -1368,6 +1400,9 @@ def run_backtest(payload: dict) -> dict:
             "start": dates[0],
             "end": dates[-1],
             "rebalance_days": freq,
+            "rebalance_mode": reb_mode,
+            "rebalance_weekday": reb_weekday,
+            "rebalance_month_day": reb_month_day,
             "top_n": top_n,
             "top_pct": top_frac,
             "commission_bps": commission_bps,
@@ -1728,6 +1763,7 @@ def batch_backtest(payload: dict) -> dict:
     take_profit = max(0.0, min(float(payload.get("take_profit_pct") or 0), 200)) / 100.0
     industry_idx, industry_cap, n_industries = _industry_cap_args(payload, data)
     min_hold_days, turnover_cap = _trade_friction_args(payload)
+    reb_mode, reb_weekday, reb_month_day = _rebalance_args(payload)
     buy_block = sell_block = None
     if trade_constraints:
         rets = data["returns"]
@@ -1742,7 +1778,9 @@ def batch_backtest(payload: dict) -> dict:
             score = np.asarray(pre_mod.apply_preprocess(
                 raw * meta["direction"], data, options, force_standardize=False
             ))
-            rebalance, warmup = _rebalance_mask(score, valid, freq)
+            rebalance, warmup = _rebalance_mask(
+                score, valid, freq, data["dates"], reb_mode, reb_weekday, reb_month_day
+            )
             override = None
             use_override = False
             if weighting == "risk_parity" and not long_short:
@@ -1797,7 +1835,10 @@ def cost_sensitivity(payload: dict) -> dict:
     data, factor, score = _prepare(payload)
     valid = _apply_filters(data, payload.get("filters"))
     freq = max(1, min(int(payload.get("rebalance_days") or 10), 120))
-    rebalance, _ = _rebalance_mask(score, valid, freq)
+    reb_mode, reb_weekday, reb_month_day = _rebalance_args(payload)
+    rebalance, _ = _rebalance_mask(
+        score, valid, freq, data["dates"], reb_mode, reb_weekday, reb_month_day
+    )
     top_n = int(payload.get("top_n") or 0)
     top_frac = float(payload.get("top_pct") or 0.2)
     long_short = bool(payload.get("long_short") or False)
