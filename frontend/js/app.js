@@ -2051,6 +2051,66 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
   }
 
   /* ------------------------------ 参数扫描 ------------------------------ */
+  async function runWalkForward() {
+    if (!state.btFactors.length) { toast("请至少添加一个因子", true); return; }
+    openModal(`
+      <div class="modal-head">
+        <div><h3>滚动验证（Walk-Forward）</h3><div class="panel-sub" style="margin-top:3px">每折用样本内最优参数，检验下一段样本外表现</div></div>
+        <button class="icon-btn" data-close>✕</button>
+      </div>
+      <div class="empty" style="border:none;padding:50px 20px">
+        <span class="spinner" style="width:22px;height:22px;margin:0 auto 12px;display:block"></span>
+        <p>正在逐折选择参数并回测…</p>
+        <div class="sub">4 折 · 参数网格 3 × 3</div>
+      </div>`, true);
+    try {
+      const res = await api("/api/backtest/walk-forward", {
+        method: "POST", body: { ...buildCommonConfig(), wf_folds: 4 },
+      });
+      renderWalkForward(res);
+    } catch (e) {
+      closeModal();
+      toast(e.message, true);
+    }
+  }
+
+  function renderWalkForward(res) {
+    const m = res.metrics;
+    openModal(`
+      <div class="modal-head">
+        <div><h3>滚动验证结果</h3>
+          <div class="panel-sub" style="margin-top:3px">${esc(res.factor.label)} · ${res.config.stocks} 只股票 · ${res.config.start} → ${res.config.end} · ${res.config.folds} 折</div>
+        </div>
+        <button class="icon-btn" data-close>✕</button>
+      </div>
+      <div class="grid-3">
+        ${[["样本外年化", fmtPct(m.annual_return)], ["夏普", fmtNum(m.sharpe)], ["最大回撤", fmtPct(m.max_drawdown)], ["累计收益", fmtPct(m.total_return)]].map(([k, v]) => `<div class="perf"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("")}
+      </div>
+      <div class="chart-wrap" style="margin-top:12px"><canvas id="wfChart"></canvas></div>
+      <div class="table-wrap" style="margin-top:12px;max-height:260px">
+        <table><thead><tr><th>折</th><th>样本内</th><th>样本外</th><th>最优持仓</th><th>调仓</th><th style="text-align:right">样本内夏普</th><th style="text-align:right">样本外收益</th><th style="text-align:right">样本外夏普</th></tr></thead>
+        <tbody>${res.folds.map((f) => `<tr style="cursor:default">
+          <td class="num-mono">${f.fold}</td>
+          <td class="num-mono" style="font-size:11px">${esc(f.is_start)} → ${esc(f.is_end)}</td>
+          <td class="num-mono" style="font-size:11px">${esc(f.oos_start)} → ${esc(f.oos_end)}</td>
+          <td class="num-mono">${f.top_n}</td>
+          <td class="num-mono">${f.rebalance_days} 日</td>
+          <td style="text-align:right" class="num-mono">${fmtNum(f.is_sharpe)}</td>
+          <td style="text-align:right" class="num-mono ${colorClass(f.oos_return)}">${fmtPct(f.oos_return)}</td>
+          <td style="text-align:right" class="num-mono">${fmtNum(f.oos_sharpe)}</td>
+        </tr>`).join("")}</tbody></table>
+      </div>
+      <div class="modal-foot" style="justify-content:space-between;align-items:center">
+        <span class="panel-sub">结果不写入历史记录</span>
+        <button class="btn ghost" data-close>关闭</button>
+      </div>`, true);
+    Charts.line($("#wfChart"), {
+      labels: res.dates,
+      series: [{ name: "滚动样本外净值", data: res.nav.map((v) => (v - 1) * 100), color: "#3ddc97", fill: true }],
+      height: 270, yFmt: (v) => v.toFixed(0) + "%", xFmt: shortDate,
+    });
+  }
+
   async function runParamScan() {
     if (!state.btFactors.length) { toast("请至少添加一个因子", true); return; }
     openModal(`
@@ -2711,6 +2771,7 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
     $("#scrBacktest").addEventListener("click", runScreenerBacktest);
     $("#batchBtn").addEventListener("click", openBatch);
     $("#costBtn").addEventListener("click", openCostSensitivity);
+    $("#wfBtn").addEventListener("click", runWalkForward);
     $("#optimizeBtn").addEventListener("click", runParamScan);
     $("#refreshHistory").addEventListener("click", loadHistory);
     $("#strategyCombineBtn").addEventListener("click", openStrategyCombine);

@@ -1941,6 +1941,128 @@ def cost_sensitivity(payload: dict) -> dict:
     }
 
 
+def walk_forward(payload: dict) -> dict:
+    """滚动验证：每折在样本内选择最优参数，再应用于下一段样本外并拼接净值。"""
+    data, factor, score = _prepare(payload)
+    dates, close = data["dates"], data["close"]
+    valid_all = _apply_filters(data, payload.get("filters"))
+    T = len(dates)
+    folds = max(2, min(int(payload.get("wf_folds") or 4), 6))
+    seg = T // (folds + 1)
+    if seg < 30:
+        raise ValueError("样本区间过短，无法进行滚动验证")
+    bounds = [i * seg for i in range(folds + 1)] + [T]
+    top_grid = sorted({int(x) for x in (payload.get("wf_top_grid") or [5, 10, 20])
+                       if 1 <= int(x) <= 100})[:4]
+    reb_grid = sorted({int(x) for x in (payload.get("wf_reb_grid") or [5, 10, 21])
+                       if 1 <= int(x) <= 60})[:4]
+    if not top_grid or not reb_grid:
+        raise ValueError("滚动验证参数范围不能为空")
+
+    commission_bps = float(payload.get("commission_bps") or 15)
+    stamp_duty_bps = float(payload.get("stamp_duty_bps") or 0)
+    slippage_bps = float(payload.get("slippage_bps") or 0)
+    if "stamp_duty_bps" not in payload and "slippage_bps" not in payload:
+        stamp_duty_bps = slippage_bps = 0.0
+    weighting = payload.get("weighting") or "equal"
+    if weighting not in ("equal", "score", "inverse_vol"):
+        weighting = "equal"
+    max_weight = float(payload.get("max_weight") or 0) / 100.0
+    industry_idx, industry_cap, n_industries = _industry_cap_args(payload, data)
+    position_cap = _position_cap(payload)
+    min_hold_days, turnover_cap = _trade_friction_args(payload)
+    stop_loss = max(0.0, min(float(payload.get("stop_loss_pct") or 0), 50)) / 100.0
+    take_profit = max(0.0, min(float(payload.get("take_profit_pct") or 0), 200)) / 100.0
+    trailing_stop = max(0.0, min(float(payload.get("trailing_stop_pct") or 0), 50)) / 100.0
+    trade_constraints = bool(payload.get("trade_constraints"))
+    timing_window = int(payload.get("timing_window") or 0) if payload.get("market_timing") else 0
+    timing = _market_timing(dates, dates[0], dates[-1], timing_window) if timing_window > 1 else None
+    buy_block = sell_block = None
+    if trade_constraints:
+        rets = data["returns"]
+        volume = data["volume"]
+        buy_block = (rets >= 0.095) | (volume <= 0)
+        sell_block = (rets <= -0.095) | (volume <= 0)
+
+    def run_window(i0: int, i1: int, top_n: int, reb: int):
+        sl = slice(i0, i1)
+        rebalance, _ = _rebalance_mask(score[sl], valid_all[sl], reb)
+        return bt_engine.run_backtest(
+            score=score[sl], close=close[sl], valid=valid_all[sl], rebalance=rebalance,
+            top_frac=0.2, top_n=top_n, long_short=False,
+            commission=commission_bps / 10000.0,
+            stamp_duty=stamp_duty_bps / 10000.0,
+            slippage=slippage_bps / 10000.0,
+            weighting=weighting, max_weight=max_weight,
+            vol=_rolling_vol(data["returns"][sl]) if weighting == "inverse_vol" else None,
+            timing=timing[sl] if timing is not None else None,
+            buy_block=buy_block[sl] if buy_block is not None else None,
+            sell_block=sell_block[sl] if sell_block is not None else None,
+            constraints=trade_constraints,
+            stop_loss=stop_loss, take_profit=take_profit, trailing_stop=trailing_stop,
+            industry_idx=industry_idx, industry_cap=industry_cap, n_industries=n_industries,
+            min_hold_days=min_hold_days, turnover_cap=turnover_cap, position_cap=position_cap,
+        )
+
+    fold_rows, stitched, stitched_dates = [], [], []
+    for k in range(folds):
+        i0, i1, i2 = bounds[k], bounds[k + 1], bounds[k + 2]
+        best = None
+        for top_n in top_grid:
+            for reb in reb_grid:
+                try:
+                    sim = run_window(i0, i1, top_n, reb)
+                except (ValueError, FloatingPointError):
+                    continue
+                m = sim["metrics"]
+                score_key = float(m["sharpe"])
+                if best is None or score_key > best["sharpe"]:
+                    best = {"top_n": top_n, "reb": reb, "sharpe": score_key,
+                            "annual_return": float(m["annual_return"])}
+        if best is None:
+            raise ValueError("样本内窗口太短，无法完成参数选择")
+        sim_oos = run_window(i1, i2, best["top_n"], best["reb"])
+        rets = np.asarray(sim_oos["returns"], dtype=np.float64)
+        nav = np.asarray(sim_oos["nav"], dtype=np.float64)
+        stitched.append(rets)
+        stitched_dates.extend(dates[i1:i2] if k == 0 else dates[i1 + 1:i2])
+        fold_rows.append({
+            "fold": k + 1,
+            "is_start": dates[i0], "is_end": dates[i1 - 1],
+            "oos_start": dates[i1], "oos_end": dates[i2 - 1],
+            "top_n": best["top_n"],
+            "rebalance_days": best["reb"],
+            "is_annual_return": round(best["annual_return"], 4),
+            "is_sharpe": round(best["sharpe"], 3),
+            "oos_return": round(float(nav[-1] - 1.0), 4),
+            "oos_sharpe": sim_oos["metrics"]["sharpe"],
+            "oos_max_drawdown": sim_oos["metrics"]["max_drawdown"],
+        })
+
+    net = np.concatenate(stitched) if stitched else np.array([0.0])
+    nav = np.concatenate([[1.0], np.cumprod(1.0 + net)])
+    metrics = _segment_metrics(net, nav)
+    metrics.update({
+        "total_return": round(float(nav[-1] - 1.0), 4),
+        "annual_volatility": round(float(np.std(net) * np.sqrt(252)), 4),
+    })
+    return {
+        "dates": stitched_dates,
+        "nav": [round(float(v), 4) for v in nav],
+        "metrics": metrics,
+        "folds": fold_rows,
+        "factor": {"label": factor["label"], "factors": factor["factors"]},
+        "config": {
+            "folds": folds,
+            "top_grid": top_grid,
+            "reb_grid": reb_grid,
+            "start": dates[0],
+            "end": dates[-1],
+            "stocks": len(data["codes"]),
+        },
+    }
+
+
 def get_factor_series(payload: dict) -> dict:
     """单只股票的因子/价格序列，用于前端叠加展示。"""
     data, factor, score = _prepare(payload)
