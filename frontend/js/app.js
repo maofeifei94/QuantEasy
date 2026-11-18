@@ -1694,6 +1694,108 @@
     });
   }
 
+  /* ------------------------------ 因子筛选 ------------------------------ */
+  function openFactorSelect() {
+    openModal(`
+      <div class="modal-head">
+        <div><h3>因子筛选（降冗余）</h3>
+          <div class="panel-sub" style="margin-top:3px">按 |ICIR| 从高到低，贪心剔除与已选因子高度相关的候选</div></div>
+        <button class="icon-btn" data-close>✕</button>
+      </div>
+      <div class="form-row" style="gap:14px;align-items:flex-end">
+        <div class="field"><label>相关性阈值 <span class="hint">|corr| 达到即剔除</span></label>
+          <input type="number" id="fsThreshold" value="0.7" min="0.1" max="0.99" step="0.05">
+        </div>
+        <div class="field"><label>IC 预测窗口</label>
+          <select id="fsHorizon">
+            <option value="1">1 日</option>
+            <option value="5" selected>5 日</option>
+            <option value="10">10 日</option>
+            <option value="20">20 日</option>
+          </select>
+        </div>
+        <button class="btn primary" id="fsRun">开始筛选</button>
+      </div>
+      <div id="fsBody" style="margin-top:14px">
+        <div class="hint-box">候选为全部内置因子与自定义因子，使用当前股票池、起止日期与过滤条件。</div>
+      </div>`, true);
+    $("#fsRun").addEventListener("click", runFactorSelect);
+  }
+
+  async function runFactorSelect() {
+    const btn = $("#fsRun");
+    const box = $("#fsBody");
+    btn.disabled = true;
+    btn.innerHTML = `<span class="spinner"></span> 筛选中`;
+    box.innerHTML = `<div class="empty" style="border:none"><p>正在计算各因子 IC 与相关性…</p></div>`;
+    try {
+      const common = buildCommonConfig();
+      const payload = {
+        threshold: Number($("#fsThreshold").value) || 0.7,
+        horizon: Number($("#fsHorizon").value) || 5,
+        codes: common.codes, start: common.start, end: common.end,
+        filters: common.filters,
+      };
+      const res = await api("/api/factors/select", { method: "POST", body: payload });
+      renderFactorSelect(res);
+    } catch (e) {
+      box.innerHTML = `<div class="hint-box"><span class="down">${esc(e.message)}</span></div>`;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "开始筛选";
+    }
+  }
+
+  function renderFactorSelect(res) {
+    const rows = (items, withWeight) => items.map((it) => `<tr style="cursor:default">
+      <td>${esc(it.label)}</td>
+      <td><span class="chip">${esc(it.category)}</span></td>
+      <td style="text-align:right" class="num-mono">${fmtNum(it.ic, 4)}</td>
+      <td style="text-align:right" class="num-mono">${fmtNum(it.icir, 2)}</td>
+      <td style="text-align:right" class="num-mono">${fmtPct(it.coverage, 1, false)}</td>
+      <td style="text-align:right" class="num-mono">${fmtNum(it.max_corr, 2)}</td>
+      ${withWeight ? `<td style="text-align:right" class="num-mono">${fmtPct(it.weight, 1, false)}</td>` : ""}
+    </tr>`).join("");
+    $("#fsBody").innerHTML = `
+      <div class="factor-meta" style="margin-bottom:8px">
+        <span class="chip green">选中 ${res.selected.length} 个</span>
+        <span class="chip">候选 ${res.candidates} 个</span>
+        <span class="chip">阈值 |corr| &lt; ${fmtNum(res.threshold, 2)}</span>
+        <span class="chip">IC 窗口 ${res.horizon} 日</span>
+      </div>
+      <div class="table-wrap" style="max-height:240px">
+        <table>
+          <thead><tr><th>选中因子</th><th>分类</th><th style="text-align:right">IC</th>
+            <th style="text-align:right">ICIR</th><th style="text-align:right">覆盖率</th>
+            <th style="text-align:right">最大相关</th><th style="text-align:right">权重</th></tr></thead>
+          <tbody>${rows(res.selected, true)}</tbody>
+        </table>
+      </div>
+      ${res.skipped.length ? `
+        <div class="panel-sub" style="margin:12px 0 6px">被剔除 ${res.skipped.length} 个（相关性过高）</div>
+        <div class="table-wrap" style="max-height:160px">
+          <table>
+            <thead><tr><th>因子</th><th>分类</th><th style="text-align:right">IC</th>
+              <th style="text-align:right">ICIR</th><th style="text-align:right">覆盖率</th>
+              <th style="text-align:right">最大相关</th></tr></thead>
+            <tbody>${rows(res.skipped, false)}</tbody>
+          </table>
+        </div>` : ""}
+      <div class="modal-foot" style="padding-left:0;padding-right:0">
+        <span class="panel-sub">权重按 |ICIR| 归一化，可直接应用</span>
+        <div class="form-row" style="gap:6px">
+          <button class="btn ghost" data-close>关闭</button>
+          <button class="btn primary" id="fsApply">加入因子组合</button>
+        </div>
+      </div>`;
+    $("#fsApply").addEventListener("click", () => {
+      state.btFactors = res.selected.map((it) => ({ id: String(it.id), weight: it.weight }));
+      renderCombo();
+      closeModal();
+      toast(`已加入 ${res.selected.length} 个低冗余因子`);
+    });
+  }
+
   /* ------------------------------ 因子权重优化 ------------------------------ */
   function openWeightOpt() {
     if (state.btFactors.length < 2) {
@@ -3173,6 +3275,7 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
     $("#previewBtn").addEventListener("click", previewFactor);
     $("#addFactorBtn").addEventListener("click", addFactorToCombo);
     $("#icWeightBtn").addEventListener("click", autoWeightByIC);
+    $("#factorSelectBtn").addEventListener("click", openFactorSelect);
     $("#saveComboFactorBtn").addEventListener("click", saveComboAsFactor);
     $$(".tpl-btn").forEach((btn) => btn.addEventListener("click", () => applyTemplate(btn.dataset.tpl)));
     $("#signalBtn").addEventListener("click", openSignal);

@@ -583,6 +583,105 @@ def factor_scan(payload: dict) -> dict:
     }
 
 
+def select_factors(payload: dict) -> dict:
+    """因子筛选：按 |ICIR| 排序，贪心挑选与已选因子相关性低于阈值的因子。"""
+    ids = payload.get("factor_ids") or []
+    if not isinstance(ids, list):
+        raise ValueError("factor_ids 需为列表")
+    threshold = float(payload.get("threshold") or 0.7)
+    threshold = max(0.1, min(threshold, 0.99))
+    horizon = int(payload.get("horizon") or 5)
+    codes = payload.get("codes") or None
+    data = panel.build_panel(codes, payload.get("start") or None, payload.get("end") or None)
+    valid = _apply_filters(data, payload.get("filters"))
+    close = data["close"]
+
+    if ids:
+        candidates = []
+        for fid in ids[:30]:
+            spec = resolve_factor({"factor_id": str(fid)})
+            meta = builtin.find_factor(str(fid))
+            candidates.append({
+                "id": str(fid),
+                "label": spec["label"],
+                "category": (meta.get("category") if meta else "自定义"),
+                "direction": spec["direction"],
+                "expression": spec["expression"],
+            })
+    else:
+        candidates = [
+            {"id": m["id"], "label": m["label"], "category": m.get("category", "因子"),
+             "direction": m["direction"], "expression": m["expression"]}
+            for m in builtin.all_factors()
+        ]
+        candidates += [
+            {"id": str(f["id"]), "label": f["name"], "category": "自定义",
+             "direction": f.get("direction", 1), "expression": f["expression"]}
+            for f in database.list_factors()
+        ]
+    if len(candidates) < 2:
+        raise ValueError("至少需要两个候选因子")
+
+    stats = []
+    scores = []
+    for cand in candidates:
+        try:
+            score = np.asarray(compute(cand["expression"], data) * cand["direction"], dtype=np.float64)
+            info = analysis.quick_ic(score, close, valid, horizon)
+        except Exception:
+            continue
+        if info["coverage"] < 0.2:
+            continue
+        scores.append(score)
+        stats.append({**cand, **info})
+    if len(stats) < 2:
+        raise ValueError("可用因子不足，请检查数据范围")
+
+    corr = np.abs(analysis.mean_factor_correlation(scores, valid))
+    order = sorted(range(len(stats)), key=lambda i: -abs(stats[i]["ir"]))
+    selected: list[int] = []
+    skipped: list[dict] = []
+    for i in order:
+        if selected:
+            max_corr = float(np.max(corr[i, selected]))
+        else:
+            max_corr = 0.0
+        item = {
+            "id": stats[i]["id"],
+            "label": stats[i]["label"],
+            "category": stats[i]["category"],
+            "ic": round(float(stats[i]["mean"]), 4),
+            "icir": round(float(stats[i]["ir"]), 3),
+            "positive_rate": stats[i]["positive_rate"],
+            "coverage": stats[i]["coverage"],
+            "max_corr": round(max_corr, 3),
+        }
+        if max_corr >= threshold:
+            item["reason"] = f"与已选因子相关性 {max_corr:.2f}"
+            skipped.append(item)
+        else:
+            selected.append(i)
+            item["weight"] = round(max(abs(stats[i]["ir"]), 0.05), 3)
+            stats[i]["selected_item"] = item
+    selected_items = [stats[i]["selected_item"] for i in selected]
+    total_w = sum(x["weight"] for x in selected_items)
+    for x in selected_items:
+        x["weight"] = round(x["weight"] / max(total_w, 1e-9), 4)
+    return {
+        "threshold": threshold,
+        "horizon": horizon,
+        "selected": selected_items,
+        "skipped": skipped,
+        "candidates": len(stats),
+        "universe": {
+            "stocks": len(data["codes"]),
+            "start": data["dates"][0],
+            "end": data["dates"][-1],
+            "days": len(data["dates"]),
+        },
+    }
+
+
 # --------------------------------------------------------------------------- #
 # 回测
 # --------------------------------------------------------------------------- #
