@@ -2025,6 +2025,12 @@
       ["最长回撤", (m.max_drawdown_days == null ? "—" : m.max_drawdown_days + " 天"), ""],
       ["月度胜率", fmtPct(m.monthly_win_rate, 1, false), ""],
     ];
+    const ca = res.cost_analysis;
+    if (ca) {
+      perf.push(["毛年化", fmtPct(ca.annual_gross_return), colorClass(ca.annual_gross_return)]);
+      perf.push(["成本拖累", fmtPct(-Math.abs(ca.cost_drag)), "neg"]);
+      perf.push(["年均成本", fmtNum(ca.annual_cost_bps, 0) + " bps", ""]);
+    }
 
     const factorChips = (res.factor.factors || []).map((f) =>
       `<span class="chip ${f.weight < 0 ? "amber" : "blue"}">${esc(f.label)} ${f.weight > 0 ? "+" : ""}${(f.weight * 100).toFixed(0)}%</span>`

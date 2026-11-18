@@ -312,7 +312,7 @@ def _simulate(
 
     peak = jnp.maximum.accumulate(nav)
     drawdown = nav / peak - 1.0
-    return nav, bench_nav, net, drawdown, dw, W
+    return nav, bench_nav, net, drawdown, dw, W, gross, cost
 
 
 @jax.jit
@@ -391,7 +391,7 @@ def run_backtest(
         dtype=jnp.int32,
     )
 
-    nav, bench, net, drawdown, dw, W = _simulate(
+    nav, bench, net, drawdown, dw, W, gross_series, cost_series = _simulate(
         score_j, close_j, valid_j, reb_j,
         float(top_frac), int(top_n), bool(long_short), float(commission),
         float(stamp_duty), float(slippage),
@@ -412,5 +412,7 @@ def run_backtest(
         "drawdown": np.asarray(drawdown, dtype=np.float64),
         "turnover": np.asarray(dw, dtype=np.float64),
         "weights": np.asarray(W, dtype=np.float64),
+        "gross_returns": np.asarray(gross_series, dtype=np.float64),
+        "costs": np.asarray(cost_series, dtype=np.float64),
         "metrics": {k: float(v) for k, v in m.items()},
     }

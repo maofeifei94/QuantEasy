@@ -1282,6 +1282,26 @@ def _return_hist(net: np.ndarray, bins: int = 15) -> dict | None:
     }
 
 
+def _cost_analysis(sim: dict, annual_net: float) -> dict | None:
+    """毛收益与净收益对比，量化交易成本拖累。"""
+    gross = sim.get("gross_returns")
+    costs = sim.get("costs")
+    if gross is None or costs is None or len(gross) < 2:
+        return None
+    g = np.asarray(gross, dtype=np.float64)
+    c = np.asarray(costs, dtype=np.float64)
+    ann_gross = float(np.prod(1.0 + g) ** (252.0 / len(g)) - 1.0)
+    drag = ann_gross - annual_net
+    return {
+        "annual_gross_return": round(ann_gross, 4),
+        "annual_net_return": round(annual_net, 4),
+        "cost_drag": round(drag, 4),
+        "annual_cost_bps": round(float(np.mean(c)) * 252.0 * 10000.0, 1),
+        "total_cost_return": round(float(np.sum(c)), 4),
+        "cost_share": round(drag / ann_gross, 4) if abs(ann_gross) > 1e-6 else None,
+    }
+
+
 def _extended_metrics(net: np.ndarray, bench_nav: np.ndarray,
                       monthly: list[dict], nav: np.ndarray | None = None) -> dict:
     out: dict[str, float] = {}
@@ -1704,8 +1724,10 @@ def run_backtest(payload: dict) -> dict:
         return [round(float(x), nd) if np.isfinite(x) else None for x in arr]
 
     cfg_name = payload.get("name") or f"{factor['label']} 回测"
+    cost_analysis = _cost_analysis(sim, float(metrics.get("annual_return", 0.0)))
     result = {
         "dates": dates,
+        "cost_analysis": cost_analysis,
         "nav": r(sim["nav"], 4),
         "benchmark": r(bench, 4),
         "drawdown": r(sim["drawdown"], 4),
