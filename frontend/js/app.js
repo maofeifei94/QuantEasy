@@ -2965,22 +2965,10 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
     } catch (e) { toast(e.message, true); }
   }
 
-  const SCHEME_KEY = "alphalab_screen_schemes";
-
-  function loadScreenSchemes() {
-    try {
-      return JSON.parse(localStorage.getItem(SCHEME_KEY) || "[]");
-    } catch (e) {
-      return [];
-    }
-  }
-
-  function saveScreenScheme() {
+  async function saveScreenScheme() {
     const name = window.prompt("选股方案名称", `方案 ${new Date().toLocaleDateString("zh-CN")}`);
-    if (!name) return;
-    const schemes = loadScreenSchemes().filter((s) => s.name !== name.trim());
-    schemes.unshift({
-      name: name.trim(),
+    if (!name || !name.trim()) return;
+    const config = {
       conditions: state.screenerConds.map((c) => ({ ...c })),
       filters: {
         star: $("#scrStar").checked,
@@ -2995,45 +2983,79 @@ ${tradeRows ? `<h2>交易明细</h2><table><thead><tr><th>日期</th><th>方向<
       mode: $("#scrMode").value || "conditions",
       logic: $("#scrLogic").value,
       sortBy: $("#scrSort").value || "score",
-    });
-    localStorage.setItem(SCHEME_KEY, JSON.stringify(schemes.slice(0, 30)));
-    toast("选股方案已保存");
+    };
+    try {
+      await api("/api/screen-schemes", { method: "POST", body: { name: name.trim(), config } });
+      toast("选股方案已保存到服务器");
+    } catch (e) {
+      toast(e.message, true);
+    }
   }
 
-  function openLoadScreenScheme() {
-    const schemes = loadScreenSchemes();
+  async function openLoadScreenScheme() {
+    let schemes = [];
+    try {
+      schemes = (await api("/api/screen-schemes")).items || [];
+    } catch (e) {
+      toast(e.message, true);
+      return;
+    }
     if (!schemes.length) { toast("暂无保存的选股方案", true); return; }
     openModal(`
       <div class="modal-head">
-        <div><h3>载入选股方案</h3><div class="panel-sub" style="margin-top:3px">保存于当前浏览器</div></div>
+        <div><h3>载入选股方案</h3><div class="panel-sub" style="margin-top:3px">方案保存在服务端 SQLite，可在任意浏览器载入</div></div>
         <button class="icon-btn" data-close>✕</button>
       </div>
-      <div style="display:flex;flex-direction:column;gap:6px;max-height:360px;overflow-y:auto">
-        ${schemes.map((s, i) => `<button class="btn ghost" data-scheme="${i}" style="justify-content:flex-start;text-align:left">
-          ${esc(s.name)} <span class="panel-sub" style="margin-left:8px">${s.conditions.length} 个条件</span>
-        </button>`).join("")}
-      </div>`, true);
-    $$("#modalBox [data-scheme]").forEach((btn) => btn.addEventListener("click", () => {
-      const s = schemes[+btn.dataset.scheme];
-      state.screenerConds = (s.conditions || []).map((c) => ({ ...c }));
-      if (!state.screenerConds.length) state.screenerConds = [{ factorId: state.factors[0]?.id || "", mode: "rank_top", value: 20, weight: 1 }];
-      const f = s.filters || {};
-      $("#scrStar").checked = f.star !== false;
-      $("#scrBJ").checked = f.bj !== false;
-      $("#scrAmount").value = f.amount || 0;
-      const wanted = new Set(f.industries || []);
-      $$("#scrIndustries option").forEach((o) => { o.selected = wanted.has(o.value); });
-      $("#scrLimit").value = s.limit || 50;
-      $("#scrConfirmDays").value = s.confirmDays || 0;
-      $("#scrConfirmMin").value = s.confirmMin || 0;
-      $("#scrIndustryLimit").value = s.industryLimit || 0;
-      $("#scrMode").value = s.mode || "conditions";
-      $("#scrLogic").value = s.logic || "and";
-      renderScreenerConds();
-      if (s.sortBy) $("#scrSort").value = s.sortBy;
-      closeModal();
-      toast(`已载入方案「${s.name}」`);
-    }));
+      <div id="schemeList" style="display:flex;flex-direction:column;gap:6px;max-height:380px;overflow-y:auto"></div>`, true);
+    const draw = () => {
+      $("#schemeList").innerHTML = schemes.map((s, i) => {
+        const count = (s.config && s.config.conditions ? s.config.conditions.length : 0);
+        return `<div class="market-row" style="cursor:default;gap:10px">
+          <div class="nm" style="flex:1;min-width:0">
+            <span class="nm">${esc(s.name)}</span>
+            <span class="code">${count} 个条件 · ${esc((s.created_at || "").slice(0, 16))}</span>
+          </div>
+          <button class="btn sm primary" data-scheme="${i}">载入</button>
+          <button class="icon-btn" data-del="${i}" title="删除方案">✕</button>
+        </div>`;
+      }).join("");
+      $$("#schemeList [data-scheme]").forEach((btn) => btn.addEventListener("click", () => applyScreenScheme(schemes[+btn.dataset.scheme])));
+      $$("#schemeList [data-del]").forEach((btn) => btn.addEventListener("click", async () => {
+        const idx = +btn.dataset.del;
+        try {
+          await api(`/api/screen-schemes/${schemes[idx].id}`, { method: "DELETE" });
+          schemes.splice(idx, 1);
+          if (!schemes.length) { closeModal(); toast("方案已删除"); return; }
+          draw();
+          toast("方案已删除");
+        } catch (e) { toast(e.message, true); }
+      }));
+    };
+    draw();
+  }
+
+  function applyScreenScheme(scheme) {
+    const s = scheme.config || {};
+    state.screenerConds = (s.conditions || []).map((c) => ({ ...c }));
+    if (!state.screenerConds.length) {
+      state.screenerConds = [{ factorId: state.factors[0]?.id || "", mode: "rank_top", value: 20, weight: 1 }];
+    }
+    const f = s.filters || {};
+    $("#scrStar").checked = f.star !== false;
+    $("#scrBJ").checked = f.bj !== false;
+    $("#scrAmount").value = f.amount || 0;
+    const wanted = new Set(f.industries || []);
+    $$("#scrIndustries option").forEach((o) => { o.selected = wanted.has(o.value); });
+    $("#scrLimit").value = s.limit || 50;
+    $("#scrConfirmDays").value = s.confirmDays || 0;
+    $("#scrConfirmMin").value = s.confirmMin || 0;
+    $("#scrIndustryLimit").value = s.industryLimit || 0;
+    $("#scrMode").value = s.mode || "conditions";
+    $("#scrLogic").value = s.logic || "and";
+    renderScreenerConds();
+    if (s.sortBy) $("#scrSort").value = s.sortBy;
+    closeModal();
+    toast(`已载入方案「${scheme.name}」`);
   }
 
   function runScreenerBacktest() {

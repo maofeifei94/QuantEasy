@@ -134,6 +134,28 @@ def delete_universe(universe_id: int) -> dict:
     return {"ok": True}
 
 
+@app.get("/api/screen-schemes")
+def screen_schemes() -> dict:
+    return {"items": database.list_screen_schemes()}
+
+
+@app.post("/api/screen-schemes")
+def save_screen_scheme(payload: dict = Body(...)) -> dict:
+    name = (payload.get("name") or "").strip()
+    config = payload.get("config")
+    if not name:
+        raise HTTPException(status_code=400, detail="方案名称不能为空")
+    if not isinstance(config, dict) or not config:
+        raise HTTPException(status_code=400, detail="方案内容不能为空")
+    return database.save_screen_scheme(name, config)
+
+
+@app.delete("/api/screen-schemes/{scheme_id}")
+def delete_screen_scheme(scheme_id: int) -> dict:
+    database.delete_screen_scheme(scheme_id)
+    return {"ok": True}
+
+
 @app.get("/api/factors")
 def factors() -> dict:
     from .factors.builtin import all_factors

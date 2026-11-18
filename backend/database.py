@@ -78,6 +78,13 @@ CREATE TABLE IF NOT EXISTS universes (
     codes      TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS screen_schemes (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL UNIQUE,
+    config     TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 """
 
 
@@ -221,6 +228,44 @@ def save_universe(name: str, codes: list[str]) -> dict:
 def delete_universe(universe_id: int) -> None:
     with _write_lock, get_conn() as conn:
         conn.execute("DELETE FROM universes WHERE id=?", (universe_id,))
+
+
+def list_screen_schemes() -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id,name,config,created_at FROM screen_schemes ORDER BY id DESC"
+        ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["config"] = json.loads(d["config"])
+        except json.JSONDecodeError:
+            d["config"] = {}
+        out.append(d)
+    return out
+
+
+def save_screen_scheme(name: str, config: dict[str, Any]) -> dict[str, Any]:
+    payload = json.dumps(config, ensure_ascii=False)
+    with _write_lock, get_conn() as conn:
+        conn.execute(
+            """INSERT INTO screen_schemes(name,config,created_at) VALUES(?,?,?)
+               ON CONFLICT(name) DO UPDATE SET config=excluded.config,
+               created_at=excluded.created_at""",
+            (name, payload, _now()),
+        )
+        row = conn.execute(
+            "SELECT id,name,config,created_at FROM screen_schemes WHERE name=?", (name,)
+        ).fetchone()
+    d = dict(row)
+    d["config"] = config
+    return d
+
+
+def delete_screen_scheme(scheme_id: int) -> None:
+    with _write_lock, get_conn() as conn:
+        conn.execute("DELETE FROM screen_schemes WHERE id=?", (scheme_id,))
 
 
 def data_quality() -> dict[str, Any]:
